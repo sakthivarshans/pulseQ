@@ -1,0 +1,22 @@
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl gcc build-essential libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN pip install --no-cache-dir uv
+
+WORKDIR /app
+
+# Copy dependency files first for layer caching
+COPY pyproject.toml uv.lock* ./
+RUN uv sync --frozen --no-dev 2>/dev/null || uv sync --no-dev
+
+# Copy the full project
+COPY . .
+
+# Healthcheck default (overridden per-service)
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
+    CMD curl -f http://localhost:${PORT:-8080}/health || exit 1

@@ -1,0 +1,386 @@
+networks:
+  neuralops:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  chromadb_data:
+  ollama_data:
+  models_data:
+  otel_data:
+  mongo_data:
+
+
+services:
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-neuralops}
+      POSTGRES_USER: ${POSTGRES_USER:-neuralops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - neuralops
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-neuralops} -d ${POSTGRES_DB:-neuralops}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD required} --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - neuralops
+    healthcheck:
+      test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  chromadb:
+    image: chromadb/chroma:latest
+    restart: unless-stopped
+    environment:
+      CHROMA_SERVER_HOST: 0.0.0.0
+      CHROMA_SERVER_HTTP_PORT: 8000
+      IS_PERSISTENT: "TRUE"
+      PERSIST_DIRECTORY: /chroma/chroma
+    volumes:
+      - chromadb_data:/chroma/chroma
+    ports:
+      - "8100:8000"
+    networks:
+      - neuralops
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8000/api/v1/heartbeat || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks:
+      - neuralops
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -sf http://localhost:11434/api/tags | grep -q phi3 && exit 0 || curl -sf http://localhost:11434/api/tags && exit 0 || exit 1" ]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 120s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [ gpu ]
+              count: all
+
+  mongodb:
+    image: mongo:7.0
+    container_name: neuralops-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-neuralops}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-neuralops123}
+      MONGO_INITDB_DATABASE: ${MONGODB_DB_NAME:-neuralops}
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - neuralops
+    healthcheck:
+      test: [ "CMD", "mongosh", "--username", "${MONGO_USER:-neuralops}", "--password", "${MONGO_PASSWORD:-neuralops123}", "--authenticationDatabase", "admin", "--eval", "db.adminCommand('ping')" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    restart: unless-stopped
+    command: [ "--config=/etc/otelcol/config.yaml" ]
+    volumes:
+      - ./opentelemetry-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+      - "9090:9090" # Prometheus remote write
+      - "8888:8888" # Metrics self-scrape
+    networks:
+      - neuralops
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:13133 || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Backend Modules ─────────────────────────────────────────────────────────
+  ingestion:
+    build:
+      context: .
+      dockerfile: modules/ingestion/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MODULE_NAME: ingestion
+    volumes:
+      - models_data:/app/models
+    networks:
+      - neuralops
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8010/health || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "8010:8010"
+
+  ml_engine:
+    build:
+      context: .
+      dockerfile: modules/ml_engine/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MODULE_NAME: ml_engine
+    volumes:
+      - models_data:/app/models
+    networks:
+      - neuralops
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ingestion:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8020/health || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    ports:
+      - "8020:8020"
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: modules/orchestrator/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MODULE_NAME: orchestrator
+    networks:
+      - neuralops
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ml_engine:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8030/health || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "8030:8030"
+
+  rca_engine:
+    build:
+      context: .
+      dockerfile: modules/rca_engine/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MODULE_NAME: rca_engine
+    networks:
+      - neuralops
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8040/health || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "8040:8040"
+
+  action_executor:
+    build:
+      context: .
+      dockerfile: modules/action_executor/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MODULE_NAME: action_executor
+    networks:
+      - neuralops
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8050/health || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "8050:8050"
+
+  memory:
+    build:
+      context: .
+      dockerfile: modules/memory/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MODULE_NAME: memory
+    networks:
+      - neuralops
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8060/health || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "8060:8060"
+
+  chatbot:
+    build:
+      context: .
+      dockerfile: modules/chatbot/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MODULE_NAME: chatbot
+    networks:
+      - neuralops
+    depends_on:
+      redis:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8070/health || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "8070:8070"
+
+  api:
+    build:
+      context: .
+      dockerfile: modules/api/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MODULE_NAME: api
+    networks:
+      - neuralops
+    volumes:
+      - ./training/data:/app/training/data:ro
+      - models_data:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      ingestion:
+        condition: service_healthy
+      ml_engine:
+        condition: service_healthy
+      orchestrator:
+        condition: service_healthy
+      rca_engine:
+        condition: service_healthy
+      memory:
+        condition: service_healthy
+      chatbot:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8080/health || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+    ports:
+      - "8080:8080"
+
+  # ── Frontend ────────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080}
+        VITE_WS_BASE_URL: ${VITE_WS_BASE_URL:-ws://localhost:8080}
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    networks:
+      - neuralops
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:80 || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

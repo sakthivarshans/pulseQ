@@ -1,0 +1,30 @@
+{
+  "error_explanation": [
+    "repo_errors",
+    "current_metrics",
+    "active_incidents"
+  ],
+  "code_question": [
+    "repo_errors"
+  ],
+  "metric_question": [
+    "current_metrics",
+    "active_incidents"
+  ],
+  "incident_question": [
+    "active_incidents",
+    "similar_past_incidents"
+  ],
+  "prediction_question": [
+    "current_metrics",
+    "similar_past_incidents"
+  ],
+  "deployment_question": [
+    "active_incidents",
+    "repo_errors"
+  ],
+  "general": [
+    "active_incidents",
+    "current_metrics"
+  ]
+}

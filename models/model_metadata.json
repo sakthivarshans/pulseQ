@@ -1,0 +1,31 @@
+{
+  "trained_at": "2026-02-24T18:18:54.707149+00:00",
+  "dataset": "training/data/synthetic_dataset.csv",
+  "n_samples": 5500,
+  "n_normal": 5000,
+  "n_anomaly": 500,
+  "isolation_forest": {
+    "n_samples": 5000.0,
+    "n_features": 9.0,
+    "mean_score": -0.4620630727846724,
+    "min_score": -0.64708926642686,
+    "precision": 0.10843634786380395,
+    "recall": 1.0,
+    "f1": 0.19565642731363725,
+    "fpr": 0.8222,
+    "tp": 500,
+    "fp": 4111,
+    "fn": 0
+  },
+  "lstm": {
+    "final_loss": 109.97555307241586,
+    "initial_loss": 3727.252597906651,
+    "threshold": 136.5188751220703,
+    "samples": 4940
+  },
+  "settings": {
+    "seq_len": 60,
+    "hidden_size": 64,
+    "anomaly_score_warn": 0.6
+  }
+}

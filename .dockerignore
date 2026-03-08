@@ -1,0 +1,44 @@
+# Exclude virtual environments
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Exclude node_modules and build artifacts
+node_modules/
+dist/
+build/
+.next/
+.serverless/
+out/
+
+# Exclude large data and models
+models/
+training/data/
+chromadb_data/
+postgres_data/
+redis_data/
+ollama_data/
+mongo_data/
+otel_data/
+
+# Exclude environment files and secrets
+.env
+.env.local
+.env.*.local
+
+# Exclude git and IDE files
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+
+# Exclude lock files that are handled specifically in Dockerfiles
+uv.lock
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
