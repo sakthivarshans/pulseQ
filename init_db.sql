@@ -290,3 +290,148 @@ VALUES
     ('api-gateway',       'neuralops-team', 'https://github.com/neuralops-team/api-gateway',       'github', 'connected', TRUE, 'Go'),
     ('ml-pipeline',       'neuralops-team', 'https://github.com/neuralops-team/ml-pipeline',       'github', 'connected', TRUE, 'Python')
 ON CONFLICT (repo_url) DO NOTHING;
+
+-- ── Add optional columns to repositories if missing ────────────────────────────
+ALTER TABLE repositories
+    ADD COLUMN IF NOT EXISTS description TEXT,
+    ADD COLUMN IF NOT EXISTS primary_language TEXT;
+
+-- ── Predictions table ───────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS predictions (
+    id                      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    repo_id                 UUID REFERENCES repositories(id) ON DELETE CASCADE,
+    service_name            TEXT NOT NULL DEFAULT 'unknown',
+    prediction_type         TEXT NOT NULL,
+    description             TEXT,
+    confidence              FLOAT NOT NULL DEFAULT 0.5,
+    status                  TEXT NOT NULL DEFAULT 'active',
+    estimated_impact_time   TIMESTAMPTZ,
+    snoozed_until           TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_predictions_repo_id  ON predictions(repo_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_status   ON predictions(status);
+CREATE INDEX IF NOT EXISTS idx_predictions_created  ON predictions(created_at DESC);
+
+-- ── Three permanent sakthivarshans repositories (fixed UUIDs, never deleted) ────
+INSERT INTO repositories (
+    id, name, owner, repo_url, platform, description,
+    primary_language, is_default, status, created_at
+) VALUES
+(
+    '00000000-0000-0000-0000-000000000001',
+    'Bug-Detection-and-Fixing-Model',
+    'sakthivarshans',
+    'https://github.com/sakthivarshans/Bug-Detection-and-Fixing-Model.git',
+    'github',
+    'Bug Detection and Fixing Model',
+    'Python',
+    true,
+    'connected',
+    NOW()
+),
+(
+    '00000000-0000-0000-0000-000000000002',
+    'Diabetes-Prediction-Model',
+    'sakthivarshans',
+    'https://github.com/sakthivarshans/Diabetes-Prediction-Model.git',
+    'github',
+    'Diabetes Prediction Model',
+    'Python',
+    true,
+    'connected',
+    NOW()
+),
+(
+    '00000000-0000-0000-0000-000000000003',
+    'Noether-Duplicated',
+    'sakthivarshans',
+    'https://github.com/sakthivarshans/Noether-Duplicated.git',
+    'github',
+    'Noether Duplicated Project',
+    'Python',
+    true,
+    'connected',
+    NOW()
+)
+ON CONFLICT (repo_url) DO NOTHING;
+
+-- ── Seed predictions linked to the three default repositories ───────────────────
+INSERT INTO predictions (
+    repo_id, service_name, prediction_type,
+    description, confidence, status, estimated_impact_time, created_at
+) VALUES
+(
+    '00000000-0000-0000-0000-000000000001',
+    'Bug-Detection-and-Fixing-Model',
+    'high_error_rate',
+    'Error rate trending upward in bug detection pipeline. Model inference failures expected to increase.',
+    0.87,
+    'active',
+    NOW() + INTERVAL '2 hours',
+    NOW()
+),
+(
+    '00000000-0000-0000-0000-000000000002',
+    'Diabetes-Prediction-Model',
+    'memory_exhaustion',
+    'Memory usage growing during batch prediction. OOM risk if dataset size increases.',
+    0.79,
+    'active',
+    NOW() + INTERVAL '4 hours',
+    NOW()
+),
+(
+    '00000000-0000-0000-0000-000000000003',
+    'Noether-Duplicated',
+    'cpu_spike',
+    'CPU usage elevated during duplicate detection runs. Performance degradation expected under load.',
+    0.91,
+    'active',
+    NOW() + INTERVAL '1 hour',
+    NOW()
+)
+ON CONFLICT DO NOTHING;
+
+-- ── Seed incidents linked to the three default repositories ─────────────────────
+INSERT INTO incidents (
+    repo_id, title, severity, status,
+    primary_service, affected_services, root_cause_summary, detected_at, created_at
+) VALUES
+(
+    '00000000-0000-0000-0000-000000000001',
+    'Bug Detection Model - High False Positive Rate',
+    'P2',
+    'resolved',
+    'Bug-Detection-and-Fixing-Model',
+    '["Bug-Detection-and-Fixing-Model"]',
+    'Model threshold misconfiguration causing false positives in production',
+    NOW() - INTERVAL '2 days',
+    NOW() - INTERVAL '2 days'
+),
+(
+    '00000000-0000-0000-0000-000000000002',
+    'Diabetes Model - Prediction Latency Spike',
+    'P3',
+    'resolved',
+    'Diabetes-Prediction-Model',
+    '["Diabetes-Prediction-Model"]',
+    'Unoptimized feature preprocessing causing 3x latency increase',
+    NOW() - INTERVAL '5 days',
+    NOW() - INTERVAL '5 days'
+),
+(
+    '00000000-0000-0000-0000-000000000003',
+    'Noether - Duplicate Detection Failure',
+    'P1',
+    'resolved',
+    'Noether-Duplicated',
+    '["Noether-Duplicated"]',
+    'Hash collision in deduplication algorithm causing missed duplicates',
+    NOW() - INTERVAL '1 day',
+    NOW() - INTERVAL '1 day'
+)
+ON CONFLICT DO NOTHING;
+

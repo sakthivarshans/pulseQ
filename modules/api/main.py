@@ -329,72 +329,148 @@ def _mount_routers_with_session() -> None:
     from modules.api.routers import notifications as notif_router
     from modules.api.routers import integrations as integ_router
     from modules.api.routers import reports as reports_router
-    from fastapi import Depends
+    from modules.api.routers import predictions as predictions_router
 
-    # Override db_session dependency in each router
-    async def _get_sf():
-        return _sf
+    notif_router.router.dependencies = []
+    integ_router.router.dependencies = []
+    reports_router.router.dependencies = []
+    predictions_router.router.dependencies = []
 
-    # Patch each router endpoint to receive the session factory
-    for router_mod in [notif_router, integ_router, reports_router]:
-        for route in router_mod.router.routes:
-            if hasattr(route, 'dependant'):
-                pass  # FastAPI handles via default kwargs
+    # Inject session factory into each router via default kwarg
+    # (each endpoint accepts db_session=None and we provide _sf)
+    for route in predictions_router.router.routes:
+        pass  # FastAPI resolves default kwargs at call time
 
     app.include_router(notif_router.router)
     app.include_router(integ_router.router)
     app.include_router(reports_router.router)
+    app.include_router(predictions_router.router)
 
 
 async def _seed_default_repositories(sf) -> None:
-    """Insert default repositories into PostgreSQL if the table has no defaults yet."""
-    async with sf() as session:
-        result = await session.execute(
-            text("SELECT COUNT(*) FROM repositories WHERE is_default = TRUE")
-        )
-        count = result.scalar() or 0
-        if count > 0:
-            return
-        defaults = [
-            {
-                "id": "aaaaaaaa-0001-0001-0001-aaaaaaaaaaaa",
-                "name": "sample-nodejs-webapp",
-                "owner": "neuralops-examples",
-                "url": "https://github.com/neuralops-examples/sample-nodejs-webapp",
-                "description": "Example Node.js Express web application demonstrating NeuralOps monitoring",
-                "language": "JavaScript",
-                "platform": "github",
-            },
-            {
-                "id": "aaaaaaaa-0002-0002-0002-aaaaaaaaaaaa",
-                "name": "sample-fastapi-service",
-                "owner": "neuralops-examples",
-                "url": "https://github.com/neuralops-examples/sample-fastapi-service",
-                "description": "Example Python FastAPI microservice with async endpoints",
-                "language": "Python",
-                "platform": "github",
-            },
-            {
-                "id": "aaaaaaaa-0003-0003-0003-aaaaaaaaaaaa",
-                "name": "sample-react-frontend",
-                "owner": "neuralops-examples",
-                "url": "https://github.com/neuralops-examples/sample-react-frontend",
-                "description": "Example React + TypeScript frontend with Vite build tooling",
-                "language": "TypeScript",
-                "platform": "github",
-            },
-        ]
-        for r in defaults:
-            await session.execute(
-                text(
-                    "INSERT INTO repositories (id, name, owner, url, description, language, platform, is_default) "
-                    "VALUES (:id, :name, :owner, :url, :description, :language, :platform, TRUE) "
-                    "ON CONFLICT (id) DO NOTHING"
-                ),
-                r,
+    """Insert the three permanent sakthivarshans repositories with fixed UUIDs."""
+    defaults = [
+        {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Bug-Detection-and-Fixing-Model",
+            "owner": "sakthivarshans",
+            "repo_url": "https://github.com/sakthivarshans/Bug-Detection-and-Fixing-Model.git",
+            "description": "Bug Detection and Fixing Model",
+            "primary_language": "Python",
+            "platform": "github",
+        },
+        {
+            "id": "00000000-0000-0000-0000-000000000002",
+            "name": "Diabetes-Prediction-Model",
+            "owner": "sakthivarshans",
+            "repo_url": "https://github.com/sakthivarshans/Diabetes-Prediction-Model.git",
+            "description": "Diabetes Prediction Model",
+            "primary_language": "Python",
+            "platform": "github",
+        },
+        {
+            "id": "00000000-0000-0000-0000-000000000003",
+            "name": "Noether-Duplicated",
+            "owner": "sakthivarshans",
+            "repo_url": "https://github.com/sakthivarshans/Noether-Duplicated.git",
+            "description": "Noether Duplicated Project",
+            "primary_language": "Python",
+            "platform": "github",
+        },
+    ]
+    try:
+        async with sf() as session:
+            # Ensure columns exist before inserting
+            await session.execute(text("ALTER TABLE repositories ADD COLUMN IF NOT EXISTS description TEXT"))
+            await session.execute(text("ALTER TABLE repositories ADD COLUMN IF NOT EXISTS primary_language TEXT"))
+            await session.commit()
+
+        async with sf() as session:
+            for r in defaults:
+                await session.execute(
+                    text(
+                        "INSERT INTO repositories "
+                        "(id, name, owner, repo_url, description, primary_language, platform, is_default, status) "
+                        "VALUES (:id, :name, :owner, :repo_url, :description, :primary_language, :platform, TRUE, 'connected') "
+                        "ON CONFLICT (repo_url) DO UPDATE SET "
+                        "  id = EXCLUDED.id, "
+                        "  is_default = TRUE, "
+                        "  primary_language = EXCLUDED.primary_language, "
+                        "  description = EXCLUDED.description"
+                    ),
+                    r,
+                )
+            await session.commit()
+
+        # Seed predictions for default repos if none exist
+        async with sf() as session:
+            # Create predictions table if not exists
+            await session.execute(text("""
+                CREATE TABLE IF NOT EXISTS predictions (
+                    id                    UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    repo_id               UUID REFERENCES repositories(id) ON DELETE CASCADE,
+                    service_name          TEXT NOT NULL DEFAULT 'unknown',
+                    prediction_type       TEXT NOT NULL,
+                    description           TEXT,
+                    confidence            FLOAT NOT NULL DEFAULT 0.5,
+                    status                TEXT NOT NULL DEFAULT 'active',
+                    estimated_impact_time TIMESTAMPTZ,
+                    snoozed_until         TIMESTAMPTZ,
+                    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await session.commit()
+
+        async with sf() as session:
+            result = await session.execute(
+                text("SELECT COUNT(*) FROM predictions WHERE repo_id IN ("
+                     "'00000000-0000-0000-0000-000000000001',"
+                     "'00000000-0000-0000-0000-000000000002',"
+                     "'00000000-0000-0000-0000-000000000003')")
             )
-        await session.commit()
+            pred_count = result.scalar() or 0
+            if pred_count == 0:
+                from datetime import UTC, timedelta
+                seed_preds = [
+                    {
+                        "repo_id": "00000000-0000-0000-0000-000000000001",
+                        "service_name": "Bug-Detection-and-Fixing-Model",
+                        "prediction_type": "high_error_rate",
+                        "description": "Error rate trending upward in bug detection pipeline. Model inference failures expected to increase.",
+                        "confidence": 0.87,
+                    },
+                    {
+                        "repo_id": "00000000-0000-0000-0000-000000000002",
+                        "service_name": "Diabetes-Prediction-Model",
+                        "prediction_type": "memory_exhaustion",
+                        "description": "Memory usage growing during batch prediction. OOM risk if dataset size increases.",
+                        "confidence": 0.79,
+                    },
+                    {
+                        "repo_id": "00000000-0000-0000-0000-000000000003",
+                        "service_name": "Noether-Duplicated",
+                        "prediction_type": "cpu_spike",
+                        "description": "CPU usage elevated during duplicate detection runs. Performance degradation expected under load.",
+                        "confidence": 0.91,
+                    },
+                ]
+                offsets_hours = [2, 4, 1]
+                for pred, offset_h in zip(seed_preds, offsets_hours):
+                    await session.execute(
+                        text(
+                            "INSERT INTO predictions "
+                            "(repo_id, service_name, prediction_type, description, confidence, status, estimated_impact_time) "
+                            "VALUES (:repo_id, :service_name, :prediction_type, :description, :confidence, 'active', "
+                            "NOW() + :offset_interval) "
+                        ),
+                        {**pred, "offset_interval": f"{offset_h} hours"},
+                    )
+                await session.commit()
+
         logger.info("default_repositories_seeded", count=len(defaults))
+    except Exception as exc:
+        logger.warning("default_repo_seed_failed", error=str(exc))
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):

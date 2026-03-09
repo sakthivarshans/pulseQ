@@ -15,6 +15,46 @@ export interface Project {
     is_default: boolean;
 }
 
+// Three permanent default repositories — always present even when API is offline
+const DEFAULT_PROJECTS: Project[] = [
+    {
+        id: '00000000-0000-0000-0000-000000000001',
+        name: 'Bug-Detection-and-Fixing-Model',
+        owner: 'sakthivarshans',
+        platform: 'github',
+        status: 'active',
+        website_url: null,
+        is_live_monitoring_enabled: false,
+        last_commit_hash: null,
+        last_commit_message: null,
+        is_default: true,
+    },
+    {
+        id: '00000000-0000-0000-0000-000000000002',
+        name: 'Diabetes-Prediction-Model',
+        owner: 'sakthivarshans',
+        platform: 'github',
+        status: 'active',
+        website_url: null,
+        is_live_monitoring_enabled: false,
+        last_commit_hash: null,
+        last_commit_message: null,
+        is_default: true,
+    },
+    {
+        id: '00000000-0000-0000-0000-000000000003',
+        name: 'Noether-Duplicated',
+        owner: 'sakthivarshans',
+        platform: 'github',
+        status: 'active',
+        website_url: null,
+        is_live_monitoring_enabled: false,
+        last_commit_hash: null,
+        last_commit_message: null,
+        is_default: true,
+    },
+];
+
 interface ProjectContextType {
     selectedProject: Project | null;
     setSelectedProject: (p: Project | null) => void;
@@ -26,20 +66,20 @@ interface ProjectContextType {
 const ProjectContext = createContext<ProjectContextType>({
     selectedProject: null,
     setSelectedProject: () => { },
-    projects: [],
-    loading: true,
+    projects: DEFAULT_PROJECTS,
+    loading: false,
     refreshProjects: async () => { },
 });
 
 export function ProjectProvider({ children }: { children: React.ReactNode }) {
     const [selectedProject, setSelectedProjectState] = useState<Project | null>(null);
-    const [projects, setProjects] = useState<Project[]>([]);
+    const [projects, setProjects] = useState<Project[]>(DEFAULT_PROJECTS);
     const [loading, setLoading] = useState(true);
 
     const fetchProjects = useCallback(async () => {
         try {
             const data = await api.getRepositoriesList();
-            const list: Project[] = (data.repositories || []).map((r: any) => ({
+            const apiList: Project[] = (data.repositories || []).map((r: any) => ({
                 id: r.id,
                 name: r.name,
                 owner: r.owner || '',
@@ -51,24 +91,34 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
                 last_commit_message: r.last_commit_message ?? null,
                 is_default: r.is_default ?? false,
             }));
-            setProjects(list);
+
+            // Merge: start with defaults, then add any API repos not already present
+            const merged: Project[] = [
+                ...DEFAULT_PROJECTS,
+                ...apiList.filter(p => !DEFAULT_PROJECTS.some(d => d.id === p.id)),
+            ];
+            setProjects(merged);
 
             // Restore previously selected project from localStorage
             const savedId = localStorage.getItem('neuralops_selected_project_id');
-            if (savedId) {
-                const found = list.find(p => p.id === savedId);
-                if (found) {
-                    setSelectedProjectState(found);
-                    return;
-                }
-            }
-            // Default: first project in list
-            if (list.length > 0) {
-                setSelectedProjectState(list[0]);
-                localStorage.setItem('neuralops_selected_project_id', list[0].id);
+            const found = merged.find(p => p.id === savedId);
+            if (found) {
+                setSelectedProjectState(found);
+            } else if (merged.length > 0) {
+                setSelectedProjectState(merged[0]);
+                localStorage.setItem('neuralops_selected_project_id', merged[0].id);
             }
         } catch {
-            // API offline — leave empty
+            // API offline — fall back to defaults so UI always has projects
+            setProjects(DEFAULT_PROJECTS);
+            const savedId = localStorage.getItem('neuralops_selected_project_id');
+            const found = DEFAULT_PROJECTS.find(p => p.id === savedId);
+            if (found) {
+                setSelectedProjectState(found);
+            } else {
+                setSelectedProjectState(DEFAULT_PROJECTS[0]);
+                localStorage.setItem('neuralops_selected_project_id', DEFAULT_PROJECTS[0].id);
+            }
         } finally {
             setLoading(false);
         }

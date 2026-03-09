@@ -1,7 +1,7 @@
 // frontend/src/pages/Repositories.tsx
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { GitBranch, Plus, ExternalLink, RefreshCw, AlertCircle, CheckCircle, Clock, Trash2, X, GitFork, Star, Loader2 } from 'lucide-react';
+import { GitBranch, Plus, ExternalLink, RefreshCw, AlertCircle, CheckCircle, Clock, X, GitFork, Star, Loader2, ShieldCheck } from 'lucide-react';
 import api from '../services/api';
 
 interface Repo {
@@ -12,6 +12,7 @@ interface Repo {
     status: string;
     description?: string;
     language?: string;
+    primary_language?: string;
     stars?: number;
     total_files?: number;
     source_files?: number;
@@ -22,7 +23,45 @@ interface Repo {
     last_commit?: string;
     consecutive_failures?: number;
     error?: string;
+    is_default?: boolean;
 }
+
+// Three permanent default repositories — always shown regardless of API state
+const DEFAULT_REPOS: Repo[] = [
+    {
+        repo_id: '00000000-0000-0000-0000-000000000001',
+        name: 'Bug-Detection-and-Fixing-Model',
+        owner: 'sakthivarshans',
+        url: 'https://github.com/sakthivarshans/Bug-Detection-and-Fixing-Model',
+        status: 'active',
+        description: 'Bug Detection and Fixing Model — ML-based system for detecting and automatically fixing software bugs.',
+        language: 'Python',
+        primary_language: 'Python',
+        is_default: true,
+    },
+    {
+        repo_id: '00000000-0000-0000-0000-000000000002',
+        name: 'Diabetes-Prediction-Model',
+        owner: 'sakthivarshans',
+        url: 'https://github.com/sakthivarshans/Diabetes-Prediction-Model',
+        status: 'active',
+        description: 'Diabetes Prediction Model — ML pipeline for early-stage diabetes risk prediction from clinical data.',
+        language: 'Python',
+        primary_language: 'Python',
+        is_default: true,
+    },
+    {
+        repo_id: '00000000-0000-0000-0000-000000000003',
+        name: 'Noether-Duplicated',
+        owner: 'sakthivarshans',
+        url: 'https://github.com/sakthivarshans/Noether-Duplicated',
+        status: 'active',
+        description: 'Noether Duplicated Project — duplicate detection and code deduplication research.',
+        language: 'Python',
+        primary_language: 'Python',
+        is_default: true,
+    },
+];
 
 function RiskBar({ count }: { count: number }) {
     const score = Math.min(1.0, count / 20);
@@ -70,12 +109,19 @@ export default function Repositories() {
     const loadRepos = useCallback(async () => {
         try {
             const data = await api.getRepositories() as any;
-            // Backend returns { repositories: [...] }
-            const list = Array.isArray(data) ? data : (data.repositories || []);
-            setRepos(list);
+            // Backend returns { repositories: [...] } or an array
+            const list: Repo[] = Array.isArray(data) ? data : (data.repositories || []);
+
+            // Always merge in the 3 permanent defaults so they appear even if DB is empty
+            const merged: Repo[] = [
+                ...DEFAULT_REPOS,
+                // Add any API repos that are NOT already in the defaults
+                ...list.filter(r => !DEFAULT_REPOS.some(d => d.repo_id === r.repo_id || d.url === r.url)),
+            ];
+            setRepos(merged);
         } catch {
-            // Backend not running — show empty state
-            setRepos([]);
+            // API offline — still show the 3 permanent defaults
+            setRepos(DEFAULT_REPOS);
         } finally {
             setLoading(false);
         }
@@ -186,7 +232,7 @@ export default function Repositories() {
                 </div>
             )}
 
-            {/* Empty state */}
+            {/* Empty state — only shown if truly no repos at all (defaults always fill this) */}
             {repos.length === 0 && (
                 <div className="card" style={{ padding: 48, textAlign: 'center' }}>
                     <div style={{ width: 56, height: 56, borderRadius: 16, background: '#EEF2FF', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
@@ -194,7 +240,7 @@ export default function Repositories() {
                     </div>
                     <div style={{ fontSize: 16, fontWeight: 700, color: '#0F172A', marginBottom: 8 }}>No repositories tracked yet</div>
                     <div style={{ fontSize: 13, color: '#64748B', maxWidth: 360, margin: '0 auto 20px' }}>
-                        Add a GitHub repository to get real code analysis — LOC counts, dependency graph, Phi-3 issue detection, and Gemini code review.
+                        Add a GitHub repository to get real code analysis — LOC counts, dependency graph, issue detection, and AI code review.
                     </div>
                     <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
                         <Plus size={14} /> Add Repository
@@ -212,12 +258,27 @@ export default function Repositories() {
                     >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                <div style={{ width: 36, height: 36, borderRadius: 10, background: '#EEF2FF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                    <GitBranch size={17} color="#6366F1" />
+                                <div style={{
+                                    width: 36, height: 36, borderRadius: 10,
+                                    background: repo.is_default ? '#EEF2FF' : '#F8FAFC',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                }}>
+                                    <GitBranch size={17} color={repo.is_default ? '#6366F1' : '#94A3B8'} />
                                 </div>
                                 <div>
-                                    <div style={{ fontWeight: 700, fontSize: 14, color: '#0F172A' }}>{repo.name}</div>
-                                    <div style={{ fontSize: 11, color: '#94A3B8' }}>{repo.owner} · {repo.language || 'Unknown'}</div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                        <span style={{ fontWeight: 700, fontSize: 14, color: '#0F172A' }}>{repo.name}</span>
+                                        {repo.is_default && (
+                                            <span style={{
+                                                display: 'inline-flex', alignItems: 'center', gap: 3,
+                                                fontSize: 10, padding: '1px 6px', borderRadius: 4,
+                                                background: '#EEF2FF', color: '#6366F1', fontWeight: 700,
+                                            }}>
+                                                <ShieldCheck size={9} /> Default
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div style={{ fontSize: 11, color: '#94A3B8' }}>{repo.owner} · {repo.primary_language || repo.language || 'Python'}</div>
                                 </div>
                             </div>
                             <StatusChip status={repo.status} />
