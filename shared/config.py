@@ -23,18 +23,21 @@ class Settings(BaseSettings):
     )
 
     # ── Database ────────────────────────────────────────────────────────────
-    database_url: str = Field(..., description="Async PostgreSQL DSN")
-    postgres_host: str = "localhost"
+    database_url: str = Field(
+        default="postgresql+asyncpg://neuralops:neuralops123@postgres:5432/neuralops",
+        description="Async PostgreSQL DSN"
+    )
+    postgres_host: str = "postgres"
     postgres_port: int = 5432
     postgres_db: str = "neuralops"
     postgres_user: str = "neuralops"
-    postgres_password: str = Field(..., description="PostgreSQL password")
+    postgres_password: str = Field(default="neuralops123", description="PostgreSQL password")
 
     # ── Redis ────────────────────────────────────────────────────────────────
-    redis_url: str = Field(..., description="Redis DSN with password")
-    redis_host: str = "localhost"
+    redis_url: str = Field(default="redis://redis:6379", description="Redis DSN")
+    redis_host: str = "redis"
     redis_port: int = 6379
-    redis_password: str = Field(..., description="Redis password")
+    redis_password: str = Field(default="", description="Redis password (optional, leave empty for no-auth)")
 
     # Redis Streams
     redis_stream_raw_events: str = "intelligence.events.raw"
@@ -43,8 +46,10 @@ class Settings(BaseSettings):
     redis_consumer_group: str = "neuralops-consumers"
 
     # ── ChromaDB ─────────────────────────────────────────────────────────────
-    chromadb_host: str = "localhost"
-    chromadb_port: int = 8100
+    chroma_host: str = "chromadb"
+    chroma_port: int = 8000
+    chromadb_host: str = "chromadb"
+    chromadb_port: int = 8000
     chromadb_collection_incidents: str = "neuralops_incidents"
     chromadb_collection_runbooks: str = "neuralops_runbooks"
 
@@ -64,7 +69,7 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     # ── LLM — Ollama / Phi-3 ─────────────────────────────────────────────────
-    ollama_base_url: str = "http://localhost:11434"
+    ollama_base_url: str = "http://ollama:11434"
     ollama_model: str = "phi3:mini"
     ollama_request_timeout_seconds: int = 60
     ollama_max_retries: int = 2
@@ -73,10 +78,19 @@ class Settings(BaseSettings):
     llm_primary_provider: Literal["openrouter", "phi3"] = "openrouter"
 
     # ── JWT ──────────────────────────────────────────────────────────────────
-    jwt_secret_key: str = Field(..., description="256-bit JWT signing secret")
+    jwt_secret_key: str = Field(
+        default="neuralops-dev-secret-change-in-production-32chars",
+        description="256-bit JWT signing secret"
+    )
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 60
     jwt_refresh_token_expire_days: int = 7
+
+    # Fernet encryption key for integration credentials
+    secret_key: str = Field(
+        default="neuralops-secret-key-change-in-production-12345",
+        description="Secret key used for Fernet encryption"
+    )
 
     # ── API ──────────────────────────────────────────────────────────────────
     api_host: str = "0.0.0.0"

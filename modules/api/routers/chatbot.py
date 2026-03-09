@@ -161,6 +161,10 @@ async def query_similar_incidents(message: str, chroma_client: Any = None) -> li
         logger.warning("query_similar_incidents_failed", error=str(exc))
         return []
 
+async def _empty_list() -> list:
+    """Async helper returning empty list — replaces removed asyncio.coroutine in Python 3.11."""
+    return []
+
 
 # ── Context builder ────────────────────────────────────────────────────────────
 async def build_chat_context(
@@ -194,7 +198,7 @@ async def build_chat_context(
         get_active_incidents_summary(pg_session),
         get_latest_metrics_from_redis(redis_client),
         query_similar_incidents(message, chroma_client),
-        get_repo_errors_summary(mongo_db, project_id) if project_id else asyncio.coroutine(lambda: [])(),
+        get_repo_errors_summary(mongo_db, project_id) if project_id else _empty_list(),
         return_exceptions=True,
     )
 
@@ -418,12 +422,12 @@ async def chatbot_ws(
 
             await websocket.send_json({"type": "typing_start"})
 
-            # Build a pg session if session factory is available
+            # Build pg session fresh for each message — keep it alive during context build
             pg_sess = None
             if pg_session_factory is not None:
                 try:
-                    async with pg_session_factory() as sess:
-                        pg_sess = sess
+                    pg_sess = pg_session_factory()
+                    # We pass the session maker; build_chat_context will use it directly
                 except Exception:
                     pg_sess = None
 
@@ -502,7 +506,7 @@ class ChatResponse(BaseModel):
     intent: str
 
 
-@router.post("/api/v1/chatbot/message", response_model=ChatResponse)
+@router.post("/chatbot/message", response_model=ChatResponse)
 async def chatbot_rest(request: ChatRequest):
     """
     REST fallback for clients that cannot maintain a WebSocket connection.

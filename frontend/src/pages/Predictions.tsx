@@ -5,6 +5,7 @@ import {
     AlertTriangle, X, Zap, CheckCircle, Info, Code2
 } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer, Tooltip } from 'recharts';
+import { useProject } from '../context/ProjectContext';
 
 interface Prediction {
     id: string;
@@ -395,6 +396,7 @@ function InvestigateModal({
 }
 
 export default function Predictions() {
+    const { selectedProject } = useProject();
     const [predictions, setPredictions] = useState<Prediction[]>(MOCK_PREDICTIONS);
     const [searchText, setSearchText] = useState('');
     const [filterSev, setFilterSev] = useState('');
@@ -441,7 +443,9 @@ export default function Predictions() {
                 <div>
                     <h1 style={{ fontSize: 22, fontWeight: 800, color: '#0F172A', letterSpacing: '-0.02em' }}>Predictions</h1>
                     <div style={{ fontSize: 13, color: '#64748B', marginTop: 3 }}>
-                        ML-powered failure forecasts · {filtered.length} active predictions
+                        {selectedProject
+                            ? <><span style={{ color: '#6366F1', fontWeight: 600 }}>{selectedProject.owner}/{selectedProject.name}</span> · ML-powered failure forecasts · {filtered.length} active predictions</>
+                            : <>ML-powered failure forecasts · {filtered.length} active predictions</>}
                     </div>
                 </div>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>

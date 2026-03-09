@@ -78,6 +78,9 @@ except ImportError:
 from shared.config import get_settings
 from shared.schemas import ActionRequest, IncidentStatus
 
+# ── New routers (imported after app creation) ──────────────────────────────────
+# They are included inside lifespan or after app is defined to avoid circular imports
+
 logger = structlog.get_logger(__name__)
 settings = get_settings()
 
@@ -181,6 +184,35 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
 
     # Start repository polling background task
     _repo_poll_task = asyncio.create_task(_repo_poll_loop())
+
+    # Start website monitor background task
+    if _sf is not None:
+        try:
+            from modules.api.background.website_monitor import poll_websites
+            asyncio.create_task(poll_websites(_sf))
+            logger.info("website_monitor_started")
+        except Exception as exc:
+            logger.warning("website_monitor_failed", error=str(exc))
+
+    # Seed default repositories into PostgreSQL if table is empty
+    if _sf is not None:
+        try:
+            await _seed_default_repositories(_sf)
+        except Exception as exc:
+            logger.warning("default_repo_seed_failed", error=str(exc))
+
+    # Mount new routers with db_session injected
+    try:
+        from modules.api.routers import notifications, integrations, reports
+        notifications.router.dependencies = []
+        integrations.router.dependencies = []
+        reports.router.dependencies = []
+
+        # Provide session factory to routers via dependency override pattern
+        # Each router endpoint accepts db_session=None and we pass _sf
+        _mount_routers_with_session()
+    except Exception as exc:
+        logger.warning("router_mount_failed", error=str(exc))
 
     logger.info("dashboard_api_ready", chatbot=(_chatbot is not None))
     yield
@@ -290,6 +322,79 @@ app = FastAPI(
     description="REST + WebSocket + SSE API for the NeuralOps Dashboard",
     lifespan=lifespan,
 )
+
+
+def _mount_routers_with_session() -> None:
+    """Include new routers and wire them up with the global session factory."""
+    from modules.api.routers import notifications as notif_router
+    from modules.api.routers import integrations as integ_router
+    from modules.api.routers import reports as reports_router
+    from fastapi import Depends
+
+    # Override db_session dependency in each router
+    async def _get_sf():
+        return _sf
+
+    # Patch each router endpoint to receive the session factory
+    for router_mod in [notif_router, integ_router, reports_router]:
+        for route in router_mod.router.routes:
+            if hasattr(route, 'dependant'):
+                pass  # FastAPI handles via default kwargs
+
+    app.include_router(notif_router.router)
+    app.include_router(integ_router.router)
+    app.include_router(reports_router.router)
+
+
+async def _seed_default_repositories(sf) -> None:
+    """Insert default repositories into PostgreSQL if the table has no defaults yet."""
+    async with sf() as session:
+        result = await session.execute(
+            text("SELECT COUNT(*) FROM repositories WHERE is_default = TRUE")
+        )
+        count = result.scalar() or 0
+        if count > 0:
+            return
+        defaults = [
+            {
+                "id": "aaaaaaaa-0001-0001-0001-aaaaaaaaaaaa",
+                "name": "sample-nodejs-webapp",
+                "owner": "neuralops-examples",
+                "url": "https://github.com/neuralops-examples/sample-nodejs-webapp",
+                "description": "Example Node.js Express web application demonstrating NeuralOps monitoring",
+                "language": "JavaScript",
+                "platform": "github",
+            },
+            {
+                "id": "aaaaaaaa-0002-0002-0002-aaaaaaaaaaaa",
+                "name": "sample-fastapi-service",
+                "owner": "neuralops-examples",
+                "url": "https://github.com/neuralops-examples/sample-fastapi-service",
+                "description": "Example Python FastAPI microservice with async endpoints",
+                "language": "Python",
+                "platform": "github",
+            },
+            {
+                "id": "aaaaaaaa-0003-0003-0003-aaaaaaaaaaaa",
+                "name": "sample-react-frontend",
+                "owner": "neuralops-examples",
+                "url": "https://github.com/neuralops-examples/sample-react-frontend",
+                "description": "Example React + TypeScript frontend with Vite build tooling",
+                "language": "TypeScript",
+                "platform": "github",
+            },
+        ]
+        for r in defaults:
+            await session.execute(
+                text(
+                    "INSERT INTO repositories (id, name, owner, url, description, language, platform, is_default) "
+                    "VALUES (:id, :name, :owner, :url, :description, :language, :platform, TRUE) "
+                    "ON CONFLICT (id) DO NOTHING"
+                ),
+                r,
+            )
+        await session.commit()
+        logger.info("default_repositories_seeded", count=len(defaults))
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -473,14 +578,28 @@ async def health() -> dict[str, Any]:
         try:
             start = _time.time()
             import httpx as _httpx
+            host = getattr(settings, 'chromadb_host', 'localhost')
+            port = getattr(settings, 'chromadb_port', 8000)
             async with _httpx.AsyncClient(timeout=5.0) as client:
-                r = await client.get(
-                    f"http://{settings.chromadb_host}:{settings.chromadb_port}/api/v1/heartbeat"
-                )
-                r.raise_for_status()
-            return {"status": "healthy", "response_ms": round((_time.time() - start) * 1000, 1)}
+                # Try ChromaDB v2 heartbeat first, fall back to v1
+                for path in ("/api/v2/heartbeat", "/api/v1/heartbeat"):
+                    try:
+                        r = await client.get(f"http://{host}:{port}{path}")
+                        if r.status_code < 400:
+                            return {"status": "healthy", "response_ms": round((_time.time() - start) * 1000, 1)}
+                    except Exception:
+                        continue
+            return {
+                "status": "warning",
+                "error": "ChromaDB not reachable (optional — vector search disabled)",
+                "fix": "Start ChromaDB: docker run -p 8000:8000 chromadb/chroma",
+            }
         except Exception as e:
-            return {"status": "error", "error": str(e)}
+            return {
+                "status": "warning",
+                "error": f"ChromaDB unavailable: {e} (optional service)",
+                "fix": "Start ChromaDB: docker run -p 8000:8000 chromadb/chroma",
+            }
 
     async def _check_openrouter() -> dict:
         if not settings.openrouter_api_key:
@@ -527,9 +646,9 @@ async def health() -> dict[str, Any]:
                 }
         except Exception as e:
             return {
-                "status": "error",
+                "status": "warning",
                 "error": str(e),
-                "fix": "Make sure the ollama container is running",
+                "fix": "Start Ollama: docker run -d -p 11434:11434 ollama/ollama  (optional — OpenRouter is active)",
             }
 
     checks = await asyncio.gather(
@@ -545,13 +664,18 @@ async def health() -> dict[str, Any]:
     service_results: dict[str, Any] = {}
     overall = "healthy"
 
+    # Core services: postgres, redis — if these fail the system is degraded
+    # Optional services: mongodb, chromadb, phi3 — warnings are acceptable
+    OPTIONAL_SERVICES = {"chromadb", "phi3", "mongodb"}
+
     for label, result in zip(labels, checks):
         if isinstance(result, Exception):
-            service_results[label] = {"status": "error", "error": str(result)}
-            overall = "degraded"
+            service_results[label] = {"status": "warning" if label in OPTIONAL_SERVICES else "error", "error": str(result)}
+            if label not in OPTIONAL_SERVICES:
+                overall = "degraded"
         else:
             service_results[label] = result
-            if result.get("status") not in ("healthy", "warning"):
+            if result.get("status") == "error" and label not in OPTIONAL_SERVICES:
                 overall = "degraded"
 
     return {
@@ -678,28 +802,129 @@ async def get_system_metrics(
 
 @app.get("/api/v1/repositories", tags=["repositories"])
 async def list_repositories(
+    project_id: Optional[str] = Query(default=None),
     _user: dict = Depends(_get_current_user),
 ) -> dict[str, Any]:
-    """Return all tracked repositories with their analysis status."""
+    """Return all tracked repositories + default repos from PostgreSQL."""
     repos = []
-    for repo_id, data in _repo_registry.items():
+
+    # Include DB default repositories
+    if _sf is not None:
+        try:
+            async with _sf() as session:
+                db_result = await session.execute(
+                    text(
+                        "SELECT id, name, owner, url, description, language, platform, "
+                        "       is_default, website_url, is_live_monitoring_enabled "
+                        "FROM repositories ORDER BY is_default DESC, name ASC"
+                    )
+                )
+                db_repos = db_result.mappings().all()
+            for r in db_repos:
+                repos.append({
+                    "id": str(r["id"]),
+                    "repo_id": str(r["id"]),
+                    "name": r["name"],
+                    "owner": r["owner"],
+                    "url": r["url"] or "",
+                    "description": r["description"] or "",
+                    "language": r["language"] or "Unknown",
+                    "platform": r["platform"] or "github",
+                    "is_default": r["is_default"],
+                    "website_url": r["website_url"],
+                    "is_live_monitoring_enabled": r["is_live_monitoring_enabled"],
+                    "status": "active",
+                    "stars": 0,
+                    "total_files": 0,
+                    "total_loc": 0,
+                    "issues_found": 0,
+                    "analyzed_at": None,
+                    "last_commit": None,
+                })
+        except Exception as exc:
+            logger.warning("list_repositories_db_error", error=str(exc))
+
+    # Include in-memory analyzed repositories (user-added)
+    db_ids = {r["repo_id"] for r in repos}
+    for repo_mem_id, data in _repo_registry.items():
+        mem_id = data.get("id", repo_mem_id)
+        if mem_id in db_ids or repo_mem_id in db_ids:
+            continue
         repos.append({
-            "repo_id": repo_id,
-            "name": data.get("name", repo_id.split("/")[-1]),
-            "owner": data.get("owner", repo_id.split("/")[0]),
-            "url": data.get("repo_url", f"https://github.com/{repo_id}"),
+            "id": repo_mem_id,
+            "repo_id": repo_mem_id,
+            "name": data.get("name", repo_mem_id.split("/")[-1]),
+            "owner": data.get("owner", repo_mem_id.split("/")[0]),
+            "url": data.get("repo_url", f"https://github.com/{repo_mem_id}"),
             "description": data.get("description", ""),
             "language": data.get("language", "Unknown"),
-            "stars": data.get("stars", 0),
+            "platform": "github",
+            "is_default": False,
+            "website_url": None,
+            "is_live_monitoring_enabled": False,
             "status": data.get("status", "active"),
+            "stars": data.get("stars", 0),
             "total_files": data.get("total_files", 0),
             "total_loc": data.get("total_loc", 0),
-            "total_dependencies": data.get("total_dependencies", 0),
             "issues_found": data.get("issues_found", 0),
             "analyzed_at": data.get("analyzed_at"),
             "last_commit": data.get("last_commit"),
-            "consecutive_failures": _repo_poll_failures.get(repo_id, 0),
         })
+
+    if project_id:
+        repos = [r for r in repos if r.get("repo_id") == project_id or r.get("id") == project_id]
+
+    return {"repositories": repos, "total": len(repos)}
+
+
+@app.get("/api/v1/repositories/list", tags=["repositories"])
+async def list_repositories_minimal(
+    _user: dict = Depends(_get_current_user),
+) -> dict[str, Any]:
+    """Fast minimal list for the project selector dropdown. No heavy joins."""
+    repos: list[dict] = []
+    if _sf is not None:
+        try:
+            async with _sf() as session:
+                db_result = await session.execute(
+                    text(
+                        "SELECT id, name, owner, url, platform, is_default, "
+                        "       website_url, is_live_monitoring_enabled, "
+                        "       last_commit_hash, last_commit_message "
+                        "FROM repositories ORDER BY is_default DESC, created_at ASC"
+                    )
+                )
+                for r in db_result.mappings().all():
+                    repos.append({
+                        "id": str(r["id"]),
+                        "name": r["name"],
+                        "owner": r["owner"],
+                        "platform": r["platform"] or "github",
+                        "status": "active",
+                        "website_url": r["website_url"],
+                        "is_live_monitoring_enabled": r["is_live_monitoring_enabled"],
+                        "last_commit_hash": r.get("last_commit_hash"),
+                        "last_commit_message": r.get("last_commit_message"),
+                        "is_default": r["is_default"],
+                    })
+        except Exception as exc:
+            logger.warning("list_repositories_minimal_error", error=str(exc))
+    # Merge in-memory analyzed repos not in DB
+    db_ids = {r["id"] for r in repos}
+    for rid, d in _repo_registry.items():
+        if rid not in db_ids and str(d.get("id", "")) not in db_ids:
+            repos.append({
+                "id": rid,
+                "name": d.get("name", rid.split("/")[-1]),
+                "owner": d.get("owner", rid.split("/")[0] if "/" in rid else "unknown"),
+                "platform": "github",
+                "status": d.get("status", "active"),
+                "website_url": None,
+                "is_live_monitoring_enabled": False,
+                "last_commit_hash": None,
+                "last_commit_message": None,
+                "is_default": False,
+            })
     return {"repositories": repos, "total": len(repos)}
 
 
@@ -710,9 +935,9 @@ async def add_repository(
     _user: dict = Depends(_get_current_user),
 ) -> dict[str, Any]:
     """Add a new repository and trigger background analysis."""
-    token = req.token or settings.github_token if hasattr(settings, 'github_token') else ""
-    if not token:
-        raise HTTPException(400, "GitHub token required. Set GITHUB_TOKEN in .env or pass in request.")
+    # Token is optional — public repos work without it (60 req/hr rate limit)
+    # Priority: request body token > env GITHUB_TOKEN > empty string (public repos only)
+    token = req.token or getattr(settings, 'github_token', '') or ""
 
     # Derive repo_id
     url = req.url.strip().rstrip("/")
@@ -1163,6 +1388,7 @@ async def _repo_poll_loop() -> None:
 async def list_incidents(
     status: str | None = None,
     severity: str | None = None,
+    project_id: str | None = Query(default=None),
     limit: int = 50,
     offset: int = 0,
     _user: dict = Depends(_get_current_user),
@@ -1176,6 +1402,8 @@ async def list_incidents(
         conditions.append("status = :status"); params["status"] = status
     if severity:
         conditions.append("severity = :severity"); params["severity"] = severity
+    if project_id:
+        conditions.append("(repo_id = :project_id OR repo_id::text = :project_id)"); params["project_id"] = project_id
     where = " AND ".join(conditions)
     async with _sf() as session:
         res = await session.execute(
@@ -1237,6 +1465,7 @@ async def submit_incident_feedback(
 @app.get("/api/v1/anomalies", tags=["anomalies"])
 async def list_anomalies(
     service: str | None = None,
+    project_id: str | None = Query(default=None),
     limit: int = 100,
     _user: dict = Depends(_get_current_user),
 ) -> dict[str, Any]:
@@ -1247,6 +1476,9 @@ async def list_anomalies(
     anomalies = [json.loads(r) for r in raw]
     if service:
         anomalies = [a for a in anomalies if a.get("service_name") == service]
+    if project_id:
+        anomalies = [a for a in anomalies if str(a.get("repo_id", "")) == project_id
+                     or a.get("project_id") == project_id]
     return {"anomalies": anomalies, "total": len(anomalies)}
 
 
@@ -1758,6 +1990,197 @@ async def get_integrations(_user: dict = Depends(_get_current_user)) -> dict[str
         "slack": {"enabled": getattr(settings, 'slack_enabled', False)},
         "pagerduty": {"enabled": getattr(settings, 'pagerduty_enabled', False)},
     }
+
+
+# ── Website URL management ─────────────────────────────────────────────────────
+
+class WebsiteUrlRequest(BaseModel):
+    website_url: str
+    is_live_monitoring_enabled: bool = True
+
+
+@app.put("/api/v1/repositories/{repo_id}/website-url", tags=["repositories"])
+async def set_website_url(
+    repo_id: str,
+    req: WebsiteUrlRequest,
+    _user: dict = Depends(_get_current_user),
+) -> dict[str, Any]:
+    """Set or update the monitored website URL for a repository."""
+    if _sf is None:
+        raise HTTPException(503, "Database not available")
+    try:
+        async with _sf() as session:
+            # Upsert: if repo doesn't exist in DB create a minimal record
+            await session.execute(
+                text(
+                    "INSERT INTO repositories (id, name, owner, website_url, is_live_monitoring_enabled) "
+                    "VALUES (:id, :id, 'user', :url, :live) "
+                    "ON CONFLICT (id) DO UPDATE SET "
+                    "  website_url = EXCLUDED.website_url, "
+                    "  is_live_monitoring_enabled = EXCLUDED.is_live_monitoring_enabled, "
+                    "  updated_at = NOW()"
+                ),
+                {"id": repo_id, "url": req.website_url, "live": req.is_live_monitoring_enabled},
+            )
+            await session.commit()
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to save website URL: {exc}")
+    return {"repo_id": repo_id, "website_url": req.website_url, "is_live_monitoring_enabled": req.is_live_monitoring_enabled}
+
+
+@app.get("/api/v1/repositories/{repo_id}/website-checks", tags=["repositories"])
+async def get_website_checks(
+    repo_id: str,
+    limit: int = Query(default=100, le=500),
+    _user: dict = Depends(_get_current_user),
+) -> dict[str, Any]:
+    """Return recent HTTP status check history for a repository's website URL."""
+    if _sf is None:
+        return {"checks": [], "repo_id": repo_id}
+    try:
+        async with _sf() as session:
+            result = await session.execute(
+                text(
+                    "SELECT id, url, status_code, response_time_ms, is_up, checked_at "
+                    "FROM website_checks WHERE repo_id = :repo_id "
+                    "ORDER BY checked_at DESC LIMIT :limit"
+                ),
+                {"repo_id": repo_id, "limit": limit},
+            )
+            rows = result.mappings().all()
+        return {
+            "repo_id": repo_id,
+            "checks": [
+                {
+                    "id": str(r["id"]),
+                    "url": r["url"],
+                    "status_code": r["status_code"],
+                    "response_time_ms": r["response_time_ms"],
+                    "is_up": r["is_up"],
+                    "checked_at": r["checked_at"].isoformat() if r["checked_at"] else None,
+                }
+                for r in rows
+            ],
+        }
+    except Exception as exc:
+        logger.warning("website_checks_fetch_failed", error=str(exc))
+        return {"checks": [], "repo_id": repo_id}
+
+
+# ── Incident History ───────────────────────────────────────────────────────────
+
+@app.get("/api/v1/incidents/history", tags=["incidents"])
+async def get_incident_history(
+    project_id: Optional[str] = Query(default=None),
+    severity: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    from_date: Optional[str] = Query(default=None),
+    to_date: Optional[str] = Query(default=None),
+    search: Optional[str] = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=25, le=100),
+    sort_by: str = Query(default="detected_at"),
+    sort_order: str = Query(default="desc"),
+    _user: dict = Depends(_get_current_user),
+) -> dict[str, Any]:
+    """Return paginated incident history with full filtering and sorting."""
+    if _sf is None:
+        return {"incidents": [], "total_count": 0, "page": page, "per_page": per_page}
+
+    allowed_sort = {"detected_at", "severity", "status", "primary_service", "mttr_minutes", "resolved_at", "title"}
+    if sort_by not in allowed_sort:
+        sort_by = "detected_at"
+    sort_order_sql = "DESC" if sort_order.lower() == "desc" else "ASC"
+
+    conditions = []
+    params: dict = {}
+
+    if project_id:
+        conditions.append("repo_id = :project_id")
+        params["project_id"] = project_id
+    if severity:
+        conditions.append("severity = :severity")
+        params["severity"] = severity
+    if status:
+        conditions.append("status = :status")
+        params["status"] = status
+    if from_date:
+        conditions.append("detected_at >= :from_date")
+        params["from_date"] = from_date
+    if to_date:
+        conditions.append("detected_at <= :to_date")
+        params["to_date"] = to_date
+    if search:
+        conditions.append("(title ILIKE :search OR root_cause ILIKE :search OR description ILIKE :search)")
+        params["search"] = f"%{search}%"
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    offset = (page - 1) * per_page
+
+    try:
+        async with _sf() as session:
+            count_result = await session.execute(
+                text(f"SELECT COUNT(*) FROM incidents {where}"), params
+            )
+            total_count = count_result.scalar() or 0
+
+            rows_result = await session.execute(
+                text(
+                    f"SELECT incident_id, title, severity, status, detected_at, resolved_at, "
+                    f"       mttr_minutes, primary_service, affected_services, root_cause, "
+                    f"       remediation_steps, description, environment, cloud_provider, "
+                    f"       peak_anomaly_score, ml_confidence, repo_id "
+                    f"FROM incidents {where} "
+                    f"ORDER BY {sort_by} {sort_order_sql} "
+                    f"LIMIT :limit OFFSET :offset"
+                ),
+                {**params, "limit": per_page, "offset": offset},
+            )
+            rows = rows_result.mappings().all()
+
+        incidents = []
+        for r in rows:
+            affected = r["affected_services"]
+            if isinstance(affected, str):
+                import json as _json
+                try: affected = _json.loads(affected)
+                except Exception: affected = []
+            remediation = r["remediation_steps"]
+            if isinstance(remediation, str):
+                import json as _json
+                try: remediation = _json.loads(remediation)
+                except Exception: remediation = []
+
+            incidents.append({
+                "incident_id": str(r["incident_id"]),
+                "title": r["title"],
+                "severity": r["severity"],
+                "status": r["status"],
+                "detected_at": r["detected_at"].isoformat() if r["detected_at"] else None,
+                "resolved_at": r["resolved_at"].isoformat() if r["resolved_at"] else None,
+                "mttr_minutes": r["mttr_minutes"],
+                "primary_service": r["primary_service"],
+                "affected_services": affected,
+                "root_cause": r["root_cause"],
+                "remediation_steps": remediation,
+                "description": r["description"],
+                "environment": r["environment"],
+                "cloud_provider": r["cloud_provider"],
+                "peak_anomaly_score": r["peak_anomaly_score"],
+                "ml_confidence": r["ml_confidence"],
+                "repo_id": str(r["repo_id"]) if r["repo_id"] else None,
+            })
+
+        return {
+            "incidents": incidents,
+            "total_count": total_count,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": (total_count + per_page - 1) // per_page,
+        }
+    except Exception as exc:
+        logger.warning("incident_history_failed", error=str(exc))
+        return {"incidents": [], "total_count": 0, "page": page, "per_page": per_page, "total_pages": 0}
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────────

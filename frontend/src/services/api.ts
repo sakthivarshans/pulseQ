@@ -28,12 +28,16 @@ function headers(extra?: Record<string, string>): HeadersInit {
 
 async function fetchWithTimeout(url: string, opts: RequestInit): Promise<Response> {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+    const timer = setTimeout(
+        () => ctrl.abort(new DOMException(`Request timed out after ${TIMEOUT_MS}ms`, 'TimeoutError')),
+        TIMEOUT_MS
+    );
     try {
         const res = await fetch(url, { ...opts, signal: ctrl.signal });
-        // Auth bypass: do not redirect on 401
         return res;
-    } finally { clearTimeout(timer); }
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -89,12 +93,13 @@ const api = {
     // ────────────────────────────────────────────────────────────
     // Incidents
     // ────────────────────────────────────────────────────────────
-    async getIncidents(params: { status?: string; severity?: string; limit?: number; offset?: number } = {}): Promise<{ incidents: any[]; total: number }> {
+    async getIncidents(params: { status?: string; severity?: string; limit?: number; offset?: number; project_id?: string } = {}): Promise<{ incidents: any[]; total: number }> {
         const qs = new URLSearchParams();
         if (params.status) qs.set('status', params.status);
         if (params.severity) qs.set('severity', params.severity);
         if (params.limit) qs.set('limit', String(params.limit));
         if (params.offset) qs.set('offset', String(params.offset));
+        if (params.project_id) qs.set('project_id', params.project_id);
         return get(`/incidents?${qs}`);
     },
 
@@ -105,11 +110,19 @@ const api = {
     // ────────────────────────────────────────────────────────────
     // Anomalies
     // ────────────────────────────────────────────────────────────
-    async getAnomalies(params: { service?: string; limit?: number } = {}): Promise<{ anomalies: any[] }> {
+    async getAnomalies(params: { service?: string; limit?: number; project_id?: string } = {}): Promise<{ anomalies: any[] }> {
         const qs = new URLSearchParams();
         if (params.service) qs.set('service_name', params.service);
         if (params.limit) qs.set('limit', String(params.limit));
+        if (params.project_id) qs.set('project_id', params.project_id);
         return get(`/anomalies?${qs}`);
+    },
+
+    // ────────────────────────────────────────────────────────────
+    // Repositories
+    // ────────────────────────────────────────────────────────────
+    async getRepositoriesList(): Promise<{ repositories: any[]; total: number }> {
+        return get('/repositories/list');
     },
 
     // ────────────────────────────────────────────────────────────
@@ -304,6 +317,30 @@ const api = {
 
     async updateSettings(data: Record<string, unknown>): Promise<any> {
         return post('/settings', data);
+    },
+
+    // ─────────────────────────────────────────────────────────────
+    // Generic helpers (for new pages that call api.get/post/put directly)
+    // ─────────────────────────────────────────────────────────────
+    async get<T = any>(path: string): Promise<T> {
+        const fullPath = path.startsWith('/api/v1') ? path.replace('/api/v1', '') : path;
+        return get<T>(fullPath);
+    },
+
+    async post<T = any>(path: string, body: unknown): Promise<T> {
+        const fullPath = path.startsWith('/api/v1') ? path.replace('/api/v1', '') : path;
+        return post<T>(fullPath, body);
+    },
+
+    async put<T = any>(path: string, body: unknown): Promise<T> {
+        const fullPath = path.startsWith('/api/v1') ? path.replace('/api/v1', '') : path;
+        const res = await fetchWithTimeout(`${BASE_URL}${fullPath}`, {
+            method: 'PUT',
+            headers: headers(),
+            body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(`API ${res.status}`);
+        return res.json();
     },
 };
 

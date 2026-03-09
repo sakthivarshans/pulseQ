@@ -1,4 +1,3 @@
-// frontend/src/pages/Developer.tsx
 import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -7,6 +6,7 @@ import {
     Activity, Star, ExternalLink, Info, Zap
 } from 'lucide-react';
 import api from '../services/api';
+import { useProject } from '../context/ProjectContext';
 
 interface FileTreeItem {
     path: string;
@@ -485,6 +485,11 @@ function DeveloperDemo() {
 export default function Developer() {
     const [searchParams] = useSearchParams();
     const repoParam = searchParams.get('repo');
+    const { selectedProject } = useProject();
+
+    // Use URL param first, fall back to selectedProject from global context
+    const effectiveRepo = repoParam || selectedProject?.id || null;
+
     const [analysis, setAnalysis] = useState<any>(null);
     const [issues, setIssues] = useState<Issue[]>([]);
     const [loading, setLoading] = useState(false);
@@ -496,30 +501,32 @@ export default function Developer() {
     const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
 
     const load = useCallback(async () => {
-        if (!repoParam) return;
+        const repo = effectiveRepo;
+        if (!repo) return;
         setLoading(true);
         try {
-            const data = await api.getRepoAnalysis(repoParam);
+            const data = await api.getRepoAnalysis(repo);
             setAnalysis(data);
         } catch {
             setAnalysis(null);
         } finally {
             setLoading(false);
         }
-    }, [repoParam]);
+    }, [effectiveRepo]);
 
     const loadIssues = useCallback(async () => {
-        if (!repoParam) return;
+        const repo = effectiveRepo;
+        if (!repo) return;
         setLoadingIssues(true);
         try {
             // Try MongoDB errors endpoint first (has confidence score, resolve, RL feedback)
             // Falls back to legacy in-memory issues if MongoDB returns empty
-            const mongoData: any = await api.getRepoErrors(repoParam);
+            const mongoData: any = await api.getRepoErrors(repo);
             if (mongoData.errors && mongoData.errors.length > 0) {
                 setIssues(mongoData.errors);
             } else {
                 // Fallback to legacy issues endpoint (uses in-memory from repo_analyzer)
-                const legacyData: any = await api.getRepoIssues(repoParam);
+                const legacyData: any = await api.getRepoIssues(repo);
                 setIssues(legacyData.issues || []);
             }
         } catch {
@@ -527,12 +534,13 @@ export default function Developer() {
         } finally {
             setLoadingIssues(false);
         }
-    }, [repoParam]);
+    }, [effectiveRepo]);
 
     const loadLogs = useCallback(async () => {
-        if (!repoParam) return;
+        const repo = effectiveRepo;
+        if (!repo) return;
         try {
-            const data: any = await api.getRepoLogs(repoParam);
+            const data: any = await api.getRepoLogs(repo);
             if (data.empty_state) {
                 setLogsEmpty(true);
                 setLogs([]);
@@ -543,7 +551,7 @@ export default function Developer() {
         } catch {
             setLogsEmpty(true);
         }
-    }, [repoParam]);
+    }, [effectiveRepo]);
 
     useEffect(() => { load(); }, [load]);
 
@@ -551,6 +559,14 @@ export default function Developer() {
         if (activeTab === 'issues') loadIssues();
         else if (activeTab === 'logs') loadLogs();
     }, [activeTab, loadIssues, loadLogs]);
+
+    // Reset state when project changes
+    useEffect(() => {
+        setAnalysis(null);
+        setIssues([]);
+        setLogs([]);
+        setActiveTab('overview');
+    }, [effectiveRepo]);
 
     const handleFeedback = (issueId: string, type: 'upvote' | 'downvote') => {
         setIssues(prev => prev.map(i => {
@@ -582,7 +598,7 @@ export default function Developer() {
         return (b.confidence_score || 0) - (a.confidence_score || 0);
     });
 
-    if (!repoParam) {
+    if (!effectiveRepo) {
         return <DeveloperDemo />;
     }
 
@@ -808,7 +824,7 @@ export default function Developer() {
                     )}
 
                     {sortedIssues.map(issue => (
-                        <IssueCard key={getIssueId(issue)} issue={issue} repoId={repoParam}
+                        <IssueCard key={getIssueId(issue)} issue={issue} repoId={effectiveRepo!}
                             onFeedback={handleFeedback} onResolve={handleResolve} />
                     ))}
                 </div>

@@ -1,8 +1,8 @@
-// frontend/src/pages/Incidents.tsx
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Filter, ChevronRight, AlertTriangle, RefreshCw } from 'lucide-react';
 import api from '../services/api';
+import { useProject } from '../context/ProjectContext';
 
 const STATUS_OPTIONS = ['', 'detected', 'investigating', 'remediating', 'resolved', 'false_positive'];
 const SEVERITY_OPTIONS = ['', 'P1', 'P2', 'P3', 'P4'];
@@ -18,6 +18,7 @@ const STATUS_STYLE: Record<string, { bg: string; color: string }> = {
 
 export default function Incidents() {
     const navigate = useNavigate();
+    const { selectedProject } = useProject();
     const [incidents, setIncidents] = useState<any[]>([]);
     const [total, setTotal] = useState(0);
     const [status, setStatus] = useState('');
@@ -29,13 +30,20 @@ export default function Incidents() {
     async function load() {
         setLoading(true);
         try {
-            const data = await api.getIncidents({ status: status || undefined, severity: severity || undefined, limit, offset });
+            const params: Record<string, any> = {
+                status: status || undefined,
+                severity: severity || undefined,
+                limit,
+                offset,
+            };
+            if (selectedProject) params.project_id = selectedProject.id;
+            const data = await api.getIncidents(params);
             setIncidents(data.incidents);
             setTotal(data.total ?? data.incidents.length);
         } catch { setIncidents([]); } finally { setLoading(false); }
     }
 
-    useEffect(() => { load(); }, [status, severity, offset]);
+    useEffect(() => { load(); }, [status, severity, offset, selectedProject?.id]);
 
     return (
         <div className="animate-fade" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -44,6 +52,7 @@ export default function Incidents() {
                 <div>
                     <h1 style={{ fontSize: 22, fontWeight: 800, color: '#0F172A', letterSpacing: '-0.02em' }}>Incidents</h1>
                     <div style={{ fontSize: 13, color: '#64748B', marginTop: 3 }}>
+                        {selectedProject ? <span style={{ color: '#6366F1', fontWeight: 600 }}>{selectedProject.owner}/{selectedProject.name} · </span> : null}
                         {total} incidents · {incidents.filter(i => !['resolved', 'false_positive'].includes(i.status)).length} active
                     </div>
                 </div>

@@ -164,9 +164,19 @@ function ServiceCard({ name, data }: { name: string; data: ServiceStatus }) {
 }
 
 // ── Main component ─────────────────────────────────────────────────────────────
+function isAdmin(): boolean {
+    try {
+        const token = localStorage.getItem('neuralops_token');
+        if (!token) return false;
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        return payload?.role === 'admin' || payload?.is_admin === true || payload?.sub === 'admin';
+    } catch { return false; }
+}
+
 export default function Settings() {
     const [section, setSection] = useState('Integrations');
     const [saved, setSaved] = useState(false);
+    const [currentUserIsAdmin] = useState<boolean>(isAdmin);
     const [phi3Health, setPhi3Health] = useState<Phi3Health>({ status: null });
     const [rlStats, setRlStats] = useState<any>(null);
     const [integrations, setIntegrations] = useState<any>({});
@@ -453,31 +463,50 @@ export default function Settings() {
                     {/* ── USERS ── */}
                     {section === 'Users' && (
                         <div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-                                <div style={{ fontWeight: 700, fontSize: 15, color: '#0F172A' }}>Team Members</div>
-                                <button className="btn btn-primary" style={{ fontSize: 12, padding: '6px 14px' }}>+ Invite</button>
-                            </div>
-                            <table className="data-table">
-                                <thead><tr>{['User', 'Role', 'Last Active', 'Status'].map(h => <th key={h}>{h}</th>)}</tr></thead>
-                                <tbody>
-                                    {[
-                                        { name: 'Admin User', email: 'admin@neuralops.io', role: 'admin', active: 'Now', status: 'Active' },
-                                        { name: 'Sarah Kim', email: 'sarah.k@acme.com', role: 'admin', active: '2h ago', status: 'Active' },
-                                        { name: 'Alex Mercer', email: 'alex.m@acme.com', role: 'viewer', active: '1d ago', status: 'Active' },
-                                        { name: 'John Kowalski', email: 'john.k@acme.com', role: 'viewer', active: '3d ago', status: 'Inactive' },
-                                    ].map(u => (
-                                        <tr key={u.email}>
-                                            <td>
-                                                <div style={{ fontWeight: 600, color: '#0F172A', fontSize: 13 }}>{u.name}</div>
-                                                <div style={{ fontSize: 11, color: '#94A3B8' }}>{u.email}</div>
-                                            </td>
-                                            <td><span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 9999, background: u.role === 'admin' ? '#EEF2FF' : '#F8FAFC', color: u.role === 'admin' ? '#6366F1' : '#64748B', fontWeight: 600, textTransform: 'capitalize' }}>{u.role}</span></td>
-                                            <td style={{ color: '#64748B', fontSize: 12 }}>{u.active}</td>
-                                            <td><span style={{ fontSize: 11, color: u.status === 'Active' ? '#059669' : '#94A3B8', fontWeight: 600 }}>{u.status}</span></td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                            {!currentUserIsAdmin ? (
+                                <div style={{ textAlign: 'center', padding: '48px 24px', color: '#94A3B8' }}>
+                                    <ShieldCheck size={48} color="#E2E8F0" style={{ marginBottom: 16 }} />
+                                    <div style={{ fontWeight: 700, fontSize: 15, color: '#374151', marginBottom: 6 }}>Admin Access Required</div>
+                                    <div style={{ fontSize: 13, maxWidth: 320, margin: '0 auto', lineHeight: 1.6 }}>
+                                        User management is restricted to administrators. Contact your system admin if you need access.
+                                    </div>
+                                </div>
+                            ) : (
+                                <div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                                        <div style={{ fontWeight: 700, fontSize: 15, color: '#0F172A' }}>Team Members</div>
+                                        <button className="btn btn-primary" style={{ fontSize: 12, padding: '6px 14px' }}>+ Invite</button>
+                                    </div>
+                                    <table className="data-table">
+                                        <thead><tr>{['User', 'Role', 'Last Active', 'Status', 'Actions'].map(h => <th key={h}>{h}</th>)}</tr></thead>
+                                        <tbody>
+                                            {[
+                                                { name: 'Admin User', email: 'admin@neuralops.io', role: 'admin', active: 'Now', status: 'Active' },
+                                                { name: 'Sarah Kim', email: 'sarah.k@acme.com', role: 'admin', active: '2h ago', status: 'Active' },
+                                                { name: 'Alex Mercer', email: 'alex.m@acme.com', role: 'viewer', active: '1d ago', status: 'Active' },
+                                                { name: 'John Kowalski', email: 'john.k@acme.com', role: 'viewer', active: '3d ago', status: 'Inactive' },
+                                            ].map(u => (
+                                                <tr key={u.email}>
+                                                    <td>
+                                                        <div style={{ fontWeight: 600, color: '#0F172A', fontSize: 13 }}>{u.name}</div>
+                                                        <div style={{ fontSize: 11, color: '#94A3B8' }}>{u.email}</div>
+                                                    </td>
+                                                    <td><span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 9999, background: u.role === 'admin' ? '#EEF2FF' : '#F8FAFC', color: u.role === 'admin' ? '#6366F1' : '#64748B', fontWeight: 600, textTransform: 'capitalize' }}>{u.role}</span></td>
+                                                    <td style={{ color: '#64748B', fontSize: 12 }}>{u.active}</td>
+                                                    <td><span style={{ fontSize: 11, color: u.status === 'Active' ? '#059669' : '#94A3B8', fontWeight: 600 }}>{u.status}</span></td>
+                                                    <td>
+                                                        {u.email !== 'admin@neuralops.io' && (
+                                                            <button style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid #FECACA', background: '#FEF2F2', color: '#DC2626', cursor: 'pointer', fontWeight: 600 }}>
+                                                                Remove
+                                                            </button>
+                                                        )}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
                         </div>
                     )}
 

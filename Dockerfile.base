@@ -1,8 +1,8 @@
 FROM python:3.11-slim
 
-# Install system dependencies
+# Install system dependencies (curl only — psycopg2-binary ships precompiled, no gcc needed)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl gcc build-essential libpq-dev \
+    curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv

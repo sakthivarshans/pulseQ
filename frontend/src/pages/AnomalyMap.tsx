@@ -1,6 +1,7 @@
 // frontend/src/pages/AnomalyMap.tsx
-import { useState, useEffect, useRef } from 'react';
-import { Activity, TrendingUp, AlertTriangle, RefreshCw } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Activity } from 'lucide-react';
+import { useProject } from '../context/ProjectContext';
 
 interface ServiceNode {
     id: string;
@@ -46,6 +47,7 @@ function scoreLabel(s: number) {
 }
 
 export default function AnomalyMap() {
+    const { selectedProject } = useProject();
     const [services, setServices] = useState<ServiceNode[]>(SERVICES);
     const [selected, setSelected] = useState<ServiceNode | null>(null);
     const [tick, setTick] = useState(0);
@@ -71,7 +73,9 @@ export default function AnomalyMap() {
                 <div>
                     <h1 style={{ fontSize: 22, fontWeight: 800, color: '#0F172A', letterSpacing: '-0.02em' }}>Anomaly Map</h1>
                     <div style={{ fontSize: 13, color: '#64748B', marginTop: 3 }}>
-                        Service dependency graph · Real-time anomaly scores
+                        {selectedProject
+                            ? <><span style={{ color: '#6366F1', fontWeight: 600 }}>{selectedProject.owner}/{selectedProject.name}</span> · Service dependency graph · Real-time anomaly scores</>
+                            : <>Service dependency graph · Real-time anomaly scores</>}
                     </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>

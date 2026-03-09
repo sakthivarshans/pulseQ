@@ -1,0 +1,56 @@
+# NeuralOps requirements.txt
+# Generated from pyproject.toml for environments that cannot use uv.
+# The Dockerfile uses uv with pyproject.toml for the actual install.
+# This file is provided for documentation and pip-based fallback.
+
+# ── FastAPI & Server ──────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+httpx==0.27.0
+websockets==12.0
+python-multipart==0.0.9
+aiofiles==23.2.1
+
+# ── Pydantic & Config ─────────────────────────────────────────────────────────
+pydantic==2.7.4
+pydantic-settings==2.3.4
+python-dotenv==1.0.1
+
+# ── Database ──────────────────────────────────────────────────────────────────
+sqlalchemy==2.0.31
+asyncpg==0.29.0
+alembic==1.13.2
+
+# ── Redis ─────────────────────────────────────────────────────────────────────
+redis==5.0.7
+
+# ── MongoDB ───────────────────────────────────────────────────────────────────
+motor==3.5.1
+pymongo==4.8.0
+
+# ── ChromaDB ──────────────────────────────────────────────────────────────────
+chromadb==0.5.3
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.1.3
+cryptography==42.0.8
+
+# ── ML / AI ───────────────────────────────────────────────────────────────────
+numpy==1.26.4
+pandas==2.2.2
+scikit-learn==1.5.1
+joblib==1.4.2
+psutil==6.0.0
+
+# ── DevOps Integrations ───────────────────────────────────────────────────────
+PyGithub==2.3.0
+gitpython==3.1.43
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+structlog==24.2.0
+tenacity==8.4.2
+apscheduler==3.10.4
+prometheus-client==0.20.0
+orjson==3.10.3
