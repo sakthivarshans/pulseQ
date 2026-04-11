@@ -27,7 +27,7 @@ class LLMService:
         self.openrouter_headers = {
             "Authorization": f"Bearer {settings.openrouter_api_key}",
             "HTTP-Referer": "https://neuralops.io",
-            "X-Title": "NeuralOps AI DevOps Platform",
+            "X-Title": "PulseQ AI DevOps Platform",
             "Content-Type": "application/json",
         }
         self.model = settings.openrouter_model

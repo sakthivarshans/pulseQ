@@ -282,6 +282,49 @@ const api = {
     },
 
     // ────────────────────────────────────────────────────────────
+    // Developer Mode — Code Improvement Analysis
+    // ────────────────────────────────────────────────────────────
+    async analyzeImprovements(repoId: string): Promise<{ status: string; message: string }> {
+        return post(`/repositories/${repoId}/analyze-improvements`, {});
+    },
+
+    async getRepoSuggestions(
+        repoId: string,
+        params: { category?: string; priority?: string; status?: string; per_page?: number } = {}
+    ): Promise<{ suggestions: any[]; total: number; page: number; per_page: number }> {
+        const qs = new URLSearchParams();
+        if (params.category) qs.set('category', params.category);
+        if (params.priority) qs.set('priority', params.priority);
+        if (params.status) qs.set('status', params.status);
+        if (params.per_page) qs.set('per_page', String(params.per_page));
+        try {
+            return get(`/repositories/${encodeURIComponent(repoId)}/suggestions?${qs}`);
+        } catch { return { suggestions: [], total: 0, page: 1, per_page: 20 }; }
+    },
+
+    async getSuggestionsSummary(repoId: string): Promise<any> {
+        try { return get(`/repositories/${encodeURIComponent(repoId)}/suggestions/summary`); } catch { return {}; }
+    },
+
+    async submitSuggestionFeedback(
+        repoId: string, suggestionId: string, feedback: 'upvote' | 'downvote'
+    ): Promise<any> {
+        try {
+            return post(`/repositories/${encodeURIComponent(repoId)}/suggestions/${suggestionId}/feedback`, { feedback });
+        } catch { return {}; }
+    },
+
+    async applySuggestionFix(repoId: string, suggestionId: string): Promise<{ pr_url: string; status: string }> {
+        return post(`/repositories/${encodeURIComponent(repoId)}/suggestions/${suggestionId}/apply-fix`, {});
+    },
+
+    async dismissSuggestion(repoId: string, suggestionId: string): Promise<any> {
+        try {
+            return post(`/repositories/${encodeURIComponent(repoId)}/suggestions/${suggestionId}/dismiss`, {});
+        } catch { return {}; }
+    },
+
+    // ────────────────────────────────────────────────────────────
     // Chatbot (Streaming SSE)
     // ────────────────────────────────────────────────────────────
     async sendChatMessage(message: string, sessionId?: string, incidentId?: string): Promise<Response> {

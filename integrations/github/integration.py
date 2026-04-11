@@ -98,8 +98,8 @@ class GitHubIntegration(ToolIntegrationInterface):
             f"- **Environment**: {incident.environment}\n"
             f"- **Detected**: {incident.detected_at.isoformat()}\n"
             f"- **ML Score**: {incident.peak_anomaly_score}\n\n"
-            f"[View in NeuralOps]({settings.api_base_url}/incidents/{incident.incident_id})\n\n"
-            f"_Opened automatically by NeuralOps AI_"
+            f"[View in PulseQ]({settings.api_base_url}/incidents/{incident.incident_id})\n\n"
+            f"_Opened automatically by PulseQ AI_"
         )
         async with httpx.AsyncClient(headers=self._headers, timeout=10.0) as client:
             resp = await client.post(

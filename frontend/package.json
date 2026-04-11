@@ -1,7 +1,7 @@
 {
   "name": "neuralops-frontend",
   "version": "1.0.0",
-  "description": "NeuralOps — AI DevOps Intelligence Platform Dashboard",
+  "description": "PulseQ — AI DevOps Intelligence Platform Dashboard",
   "private": true,
   "type": "module",
   "scripts": {

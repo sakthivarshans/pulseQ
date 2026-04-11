@@ -40,7 +40,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -245,6 +245,10 @@ async def _ensure_mongo_indexes(db: Any) -> None:
         await db["chatbot_context_cache"].create_index(
             [("created_at", 1)], expireAfterSeconds=300
         )
+        # code_suggestions indexes (Developer Mode)
+        await db["code_suggestions"].create_index([("repo_id", 1), ("file_path", 1)])
+        await db["code_suggestions"].create_index([("repo_id", 1), ("priority", 1)])
+        await db["code_suggestions"].create_index([("repo_id", 1), ("status", 1)])
     except Exception as exc:
         logger.warning("mongo_index_error", error=str(exc))
 
@@ -317,9 +321,9 @@ async def _ensure_chromadb_seeded() -> None:
 
 
 app = FastAPI(
-    title="NeuralOps Dashboard API",
+    title="PulseQ Dashboard API",
     version="2.0.0",
-    description="REST + WebSocket + SSE API for the NeuralOps Dashboard",
+    description="REST + WebSocket + SSE API for the PulseQ Dashboard",
     lifespan=lifespan,
 )
 
@@ -484,6 +488,21 @@ async def log_requests(request: Request, call_next):
     if response.status_code >= 400:
         logger.warning("api_response_error", path=request.url.path, status=response.status_code)
     return response
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    import traceback
+    err_tb = traceback.format_exc()
+    logger.error("unhandled_exception", 
+                 path=request.url.path, 
+                 method=request.method, 
+                 error=str(exc),
+                 traceback=err_tb)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error", "error": str(exc)},
+    )
 
 
 # CORS: always wildcard in development. allow_credentials MUST be False when using ["*"]
@@ -868,7 +887,7 @@ async def get_system_metrics(
             "latest": latest,
             "history": buf[-limit:],
             "source": "psutil",
-            "info": "Showing NeuralOps server metrics. Connect your app with the NeuralOps SDK to monitor your application.",
+            "info": "Showing PulseQ server metrics. Connect your app with the PulseQ SDK to monitor your application.",
         }
     except Exception as exc:
         return {"latest": {}, "history": [], "error": str(exc)}
@@ -890,7 +909,7 @@ async def list_repositories(
             async with _sf() as session:
                 db_result = await session.execute(
                     text(
-                        "SELECT id, name, owner, url, description, language, platform, "
+                        "SELECT id, name, owner, repo_url, description, language, platform, "
                         "       is_default, website_url, is_live_monitoring_enabled "
                         "FROM repositories ORDER BY is_default DESC, name ASC"
                     )
@@ -902,7 +921,7 @@ async def list_repositories(
                     "repo_id": str(r["id"]),
                     "name": r["name"],
                     "owner": r["owner"],
-                    "url": r["url"] or "",
+                    "url": r["repo_url"] or "",
                     "description": r["description"] or "",
                     "language": r["language"] or "Unknown",
                     "platform": r["platform"] or "github",
@@ -964,9 +983,9 @@ async def list_repositories_minimal(
             async with _sf() as session:
                 db_result = await session.execute(
                     text(
-                        "SELECT id, name, owner, url, platform, is_default, "
+                        "SELECT id, name, owner, repo_url, platform, is_default, "
                         "       website_url, is_live_monitoring_enabled, "
-                        "       last_commit_hash, last_commit_message "
+                        "       last_commit_hash "
                         "FROM repositories ORDER BY is_default DESC, created_at ASC"
                     )
                 )
@@ -980,7 +999,6 @@ async def list_repositories_minimal(
                         "website_url": r["website_url"],
                         "is_live_monitoring_enabled": r["is_live_monitoring_enabled"],
                         "last_commit_hash": r.get("last_commit_hash"),
-                        "last_commit_message": r.get("last_commit_message"),
                         "is_default": r["is_default"],
                     })
         except Exception as exc:
@@ -1044,6 +1062,8 @@ async def add_repository(
     }
 
     background_tasks.add_task(_run_analysis, repo_id, url, token)
+    logger.info("repository_added", repo_id=repo_id, url=url)
+    
     return {"repo_id": repo_id, "status": "analysis_started",
             "message": f"Analysis of {repo_id} started. Refresh in 30-60 seconds."}
 
@@ -1349,7 +1369,7 @@ async def get_repo_logs(
         return {
             "logs": [],
             "empty_state": True,
-            "message": "No runtime logs available. Install the NeuralOps SDK to see live logs. Showing GitHub Actions status instead.",
+            "message": "No runtime logs available. Install the PulseQ SDK to see live logs. Showing GitHub Actions status instead.",
         }
 
     owner = data.get("owner", "")
@@ -1382,6 +1402,804 @@ async def get_repo_logs(
     except Exception as exc:
         return {"logs": [], "empty_state": True,
                 "message": f"Could not fetch GitHub Actions logs: {exc}"}
+
+
+
+# ── Developer Mode — Code Improvement Analysis ─────────────────────────────────
+
+IMPROVEMENT_PROMPT = """You are an expert software engineer specializing in code optimization and best practices.
+Analyze this {language} code file and provide specific, actionable improvement suggestions.
+
+File: {file_path}
+```{language}
+{file_content}
+```
+
+For each improvement you find, provide a JSON object with these exact fields:
+- line_start: integer, first line of the code to improve
+- line_end: integer, last line of the code to improve
+- category: one of [performance, security, readability, error_handling, memory, algorithm, best_practice, redundancy]
+- priority: one of [critical, high, medium, low]
+- title: short specific title of the improvement
+- problem: explain exactly what is wrong or suboptimal in this specific code
+- solution: explain exactly how to fix it and why it is better
+- code_before: the exact current code snippet that needs changing
+- code_after: the exact improved version of that same snippet
+- performance_impact: estimated improvement like "30% faster" or "reduces memory by 50MB" or "no measurable impact"
+- effort: one of [trivial, low, medium, high]
+
+Return ONLY a valid JSON array. No explanation before or after.
+If the code is already well optimized return an empty array [].
+Only suggest real improvements you can see in the actual code.
+Do not suggest adding comments or documentation.
+Focus on: algorithmic efficiency, memory usage, security vulnerabilities, error handling gaps, code redundancy, performance bottlenecks."""
+
+_LANG_MAP: dict[str, str] = {
+    ".py": "python", ".js": "javascript", ".ts": "typescript",
+    ".tsx": "typescript", ".jsx": "javascript", ".java": "java",
+    ".go": "go", ".rs": "rust", ".cpp": "cpp", ".c": "c",
+    ".cs": "csharp", ".rb": "ruby", ".php": "php", ".swift": "swift",
+    ".kt": "kotlin", ".sh": "bash", ".yaml": "yaml", ".yml": "yaml",
+    ".json": "json", ".html": "html", ".css": "css",
+}
+
+_SOURCE_EXTS = {
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs",
+    ".cpp", ".c", ".cs", ".rb", ".php", ".swift", ".kt",
+}
+
+
+def _detect_language(file_path: str) -> str:
+    import os
+    ext = os.path.splitext(file_path)[1].lower()
+    return _LANG_MAP.get(ext, "text")
+
+
+async def _gh_get_file_content(
+    owner: str, repo: str, path: str, branch: str, token: str
+) -> str:
+    """Fetch raw file content from GitHub. Returns empty string on failure."""
+    import httpx, base64
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github.v3+json",
+    }
+    if token:
+        headers["Authorization"] = f"token {token}"
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+                headers=headers,
+                params={"ref": branch},
+            )
+            if r.status_code != 200:
+                return ""
+            data = r.json()
+            if isinstance(data, dict) and data.get("encoding") == "base64":
+                return base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+            return ""
+    except Exception:
+        return ""
+
+
+async def _gh_get_tree(
+    owner: str, repo: str, branch: str, token: str
+) -> list[dict]:
+    """Fetch the flat file tree for a repository."""
+    import httpx
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github.v3+json",
+    }
+    if token:
+        headers["Authorization"] = f"token {token}"
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}",
+                headers=headers,
+                params={"recursive": "1"},
+            )
+            if r.status_code != 200:
+                return []
+            return r.json().get("tree", [])
+    except Exception:
+        return []
+
+
+async def _gh_create_branch(
+    owner: str, repo: str, branch_name: str, from_branch: str, token: str
+) -> dict:
+    import httpx
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/git/ref/heads/{from_branch}",
+            headers=headers,
+        )
+        r.raise_for_status()
+        sha = r.json()["object"]["sha"]
+        create_r = await client.post(
+            f"https://api.github.com/repos/{owner}/{repo}/git/refs",
+            headers=headers,
+            json={"ref": f"refs/heads/{branch_name}", "sha": sha},
+        )
+        create_r.raise_for_status()
+        return create_r.json()
+
+
+async def _gh_update_file(
+    owner: str,
+    repo: str,
+    path: str,
+    content: str,
+    message: str,
+    branch: str,
+    token: str,
+) -> dict:
+    import httpx, base64 as _b64
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+            headers=headers,
+            params={"ref": branch},
+        )
+        r.raise_for_status()
+        current_sha = r.json()["sha"]
+        encoded = _b64.b64encode(content.encode()).decode()
+        update_r = await client.put(
+            f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+            headers=headers,
+            json={
+                "message": message,
+                "content": encoded,
+                "sha": current_sha,
+                "branch": branch,
+            },
+        )
+        update_r.raise_for_status()
+        return update_r.json()
+
+
+async def _gh_create_pull_request(
+    owner: str,
+    repo: str,
+    title: str,
+    body: str,
+    head_branch: str,
+    base_branch: str,
+    token: str,
+) -> dict:
+    import httpx
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(
+            f"https://api.github.com/repos/{owner}/{repo}/pulls",
+            headers=headers,
+            json={
+                "title": title,
+                "body": body,
+                "head": head_branch,
+                "base": base_branch,
+            },
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+async def _call_llm_for_improvements(
+    file_path: str,
+    file_content: str,
+    language: str,
+) -> list[dict]:
+    """Call the active LLM with the improvement prompt and parse the JSON array."""
+    prompt = IMPROVEMENT_PROMPT.format(
+        language=language,
+        file_path=file_path,
+        file_content=file_content[:5000],  # cap to ~5k chars to stay within token limits
+    )
+    raw_text = ""
+    try:
+        from shared.llm import llm_service
+        if llm_service.openrouter_available:
+            raw_text = await llm_service.generate(
+                system_prompt="You are a code reviewer. Return only valid JSON.",
+                user_prompt=prompt,
+                temperature=0.1,
+                max_tokens=4096,
+            )
+        else:
+            # Phi-3 via Ollama
+            import httpx
+            async with httpx.AsyncClient(timeout=90) as client:
+                resp = await client.post(
+                    f"{settings.ollama_base_url}/api/generate",
+                    json={
+                        "model": "phi3:mini",
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {"temperature": 0.1, "num_predict": 4096},
+                    },
+                )
+                resp.raise_for_status()
+                raw_text = resp.json().get("response", "[]")
+    except Exception as exc:
+        logger.warning("llm_improvement_call_failed", file=file_path, error=str(exc))
+        return []
+
+    # Extract JSON array from response
+    start = raw_text.find("[")
+    end = raw_text.rfind("]") + 1
+    if start < 0 or end <= start:
+        return []
+    try:
+        items = json.loads(raw_text[start:end])
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(items, list):
+        return []
+
+    VALID_CATEGORIES = {
+        "performance", "security", "readability", "error_handling",
+        "memory", "algorithm", "best_practice", "redundancy",
+    }
+    VALID_PRIORITIES = {"critical", "high", "medium", "low"}
+    VALID_EFFORTS = {"trivial", "low", "medium", "high"}
+
+    result = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        cat = item.get("category", "best_practice")
+        if cat not in VALID_CATEGORIES:
+            cat = "best_practice"
+        pri = item.get("priority", "medium")
+        if pri not in VALID_PRIORITIES:
+            pri = "medium"
+        effort = item.get("effort", "medium")
+        if effort not in VALID_EFFORTS:
+            effort = "medium"
+        result.append({
+            "file_path": file_path,
+            "language": language,
+            "line_start": int(item.get("line_start", 1)),
+            "line_end": int(item.get("line_end", 1)),
+            "category": cat,
+            "priority": pri,
+            "title": str(item.get("title", ""))[:200],
+            "problem": str(item.get("problem", "")),
+            "solution": str(item.get("solution", "")),
+            "code_before": str(item.get("code_before", ""))[:2000],
+            "code_after": str(item.get("code_after", ""))[:2000],
+            "performance_impact": str(item.get("performance_impact", "no measurable impact"))[:200],
+            "effort": effort,
+        })
+    return result
+
+
+async def _analyze_full_repository_for_improvements(
+    repo_id: str,
+    owner: str,
+    repo_name: str,
+    branch: str,
+    token: str,
+    mongo_db: Any,
+    ws_connections: dict,
+) -> None:
+    """
+    Background task: fetch file tree, analyze source files in batches of 5,
+    save all suggestions to MongoDB, then broadcast analysis_complete via WebSocket.
+    """
+    logger.info("improvement_analysis_started", repo=repo_id)
+    try:
+        tree = await _gh_get_tree(owner, repo_name, branch, token)
+        source_files = [
+            item["path"] for item in tree
+            if item.get("type") == "blob"
+            and any(item["path"].endswith(ext) for ext in _SOURCE_EXTS)
+        ][:30]  # cap at 30 files
+
+        logger.info("improvement_files_selected", repo=repo_id, count=len(source_files))
+
+        semaphore = asyncio.Semaphore(5)
+
+        async def analyze_one(file_path: str) -> list[dict]:
+            async with semaphore:
+                content = await _gh_get_file_content(owner, repo_name, file_path, branch, token)
+                if not content or len(content.strip()) < 50:
+                    return []
+                lang = _detect_language(file_path)
+                suggestions = await _call_llm_for_improvements(file_path, content, lang)
+                return suggestions
+
+        all_results = await asyncio.gather(*[analyze_one(fp) for fp in source_files])
+
+        # Flatten and deduplicate by (file_path, line_start, title)
+        seen: set[tuple] = set()
+        unique_suggestions = []
+        for suggestions in all_results:
+            for s in suggestions:
+                key = (s["file_path"], s["line_start"], s["title"])
+                if key not in seen:
+                    seen.add(key)
+                    unique_suggestions.append(s)
+
+        # Save to MongoDB
+        if mongo_db is not None and unique_suggestions:
+            # Delete previous open suggestions for this repo
+            await mongo_db["code_suggestions"].delete_many(
+                {"repo_id": repo_id, "status": "open"}
+            )
+            now = datetime.now(UTC).isoformat()
+            docs = [
+                {
+                    **s,
+                    "repo_id": repo_id,
+                    "status": "open",
+                    "upvotes": 0,
+                    "downvotes": 0,
+                    "pr_url": None,
+                    "created_at": now,
+                }
+                for s in unique_suggestions
+            ]
+            await mongo_db["code_suggestions"].insert_many(docs)
+            logger.info(
+                "improvement_suggestions_saved",
+                repo=repo_id,
+                count=len(docs),
+            )
+
+        # Update repo status back to active in PostgreSQL if possible
+        if _sf is not None:
+            try:
+                async with _sf() as session:
+                    await session.execute(
+                        text("UPDATE repositories SET status = 'active' WHERE id::text = :rid"),
+                        {"rid": repo_id},
+                    )
+                    await session.commit()
+            except Exception:
+                pass
+
+        # Broadcast analysis_complete via WebSocket
+        msg = json.dumps({
+            "type": "analysis_complete",
+            "repo_id": repo_id,
+            "suggestion_count": len(unique_suggestions),
+        })
+        closed = []
+        for ws_id, ws_list in ws_connections.items():
+            for ws in list(ws_list):
+                try:
+                    await ws.send_text(msg)
+                except Exception:
+                    closed.append((ws_id, ws))
+        for ws_id, ws in closed:
+            try:
+                ws_connections[ws_id].remove(ws)
+            except Exception:
+                pass
+
+        logger.info(
+            "improvement_analysis_complete",
+            repo=repo_id,
+            suggestions=len(unique_suggestions),
+        )
+    except Exception as exc:
+        logger.error("improvement_analysis_failed", repo=repo_id, error=str(exc))
+        # Still update status on failure
+        if _sf is not None:
+            try:
+                async with _sf() as session:
+                    await session.execute(
+                        text("UPDATE repositories SET status = 'active' WHERE id::text = :rid"),
+                        {"rid": repo_id},
+                    )
+                    await session.commit()
+            except Exception:
+                pass
+
+
+async def _generate_fix_and_create_pr(
+    repo_id: str,
+    suggestion_id: str,
+    token: str,
+    owner: str,
+    repo_name: str,
+    branch: str,
+    mongo_db: Any,
+) -> str:
+    """Apply the suggestion fix and open a GitHub Pull Request. Returns the PR URL."""
+    from bson import ObjectId
+
+    # Load suggestion from MongoDB
+    doc = await mongo_db["code_suggestions"].find_one({"_id": ObjectId(suggestion_id)})
+    if not doc:
+        raise ValueError(f"Suggestion {suggestion_id} not found")
+
+    file_path = doc["file_path"]
+    code_before: str = doc.get("code_before", "")
+    code_after: str = doc.get("code_after", "")
+
+    if not code_before or not code_after:
+        raise ValueError("Suggestion is missing code_before or code_after")
+
+    # Fetch original file content
+    original_content = await _gh_get_file_content(owner, repo_name, file_path, branch, token)
+    if not original_content:
+        raise ValueError(f"Could not fetch file: {file_path}")
+
+    # Apply fix — if code_before appears multiple times, use line numbers to find the right one
+    if original_content.count(code_before) == 1:
+        new_content = original_content.replace(code_before, code_after, 1)
+    elif original_content.count(code_before) > 1:
+        # Fall back to line-number-based replacement
+        lines = original_content.splitlines(keepends=True)
+        line_start = doc.get("line_start", 1) - 1  # 0-indexed
+        line_end = doc.get("line_end", line_start + 1)  # 0-indexed exclusive
+        region = "".join(lines[line_start:line_end])
+        if code_before in region:
+            new_region = region.replace(code_before, code_after, 1)
+            lines[line_start:line_end] = [new_region]
+            new_content = "".join(lines)
+        else:
+            new_content = original_content.replace(code_before, code_after, 1)
+    else:
+        raise ValueError("code_before not found in file — the file may have changed since analysis")
+
+    # Create a new branch
+    fix_branch = f"neuralops-fix/{suggestion_id[:8]}"
+    await _gh_create_branch(owner, repo_name, fix_branch, branch, token)
+
+    # Commit the file change
+    commit_msg = f"fix: {doc.get('title', 'NeuralOps optimization')}\n\n{doc.get('solution', '')}"
+    await _gh_update_file(
+        owner, repo_name, file_path, new_content, commit_msg, fix_branch, token
+    )
+
+    # Create Pull Request
+    pr_body = (
+        f"## PulseQ AI Optimization\n\n"
+        f"**File:** `{file_path}` (lines {doc.get('line_start')}–{doc.get('line_end')})\n\n"
+        f"### Problem\n{doc.get('problem', '')}\n\n"
+        f"### Solution\n{doc.get('solution', '')}\n\n"
+        f"### Performance Impact\n{doc.get('performance_impact', 'N/A')}\n\n"
+        f"---\n_This fix was generated automatically by [PulseQ AI](https://github.com/pulseq). "
+        f"Please review carefully before merging._"
+    )
+    pr = await _gh_create_pull_request(
+        owner, repo_name,
+        title=f"[PulseQ] {doc.get('title', 'Code optimization')}",
+        body=pr_body,
+        head_branch=fix_branch,
+        base_branch=branch,
+        token=token,
+    )
+    pr_url: str = pr.get("html_url", "")
+
+    # Save PR URL to suggestion record
+    await mongo_db["code_suggestions"].update_one(
+        {"_id": ObjectId(suggestion_id)},
+        {"$set": {"status": "pr_created", "pr_url": pr_url}},
+    )
+
+    return pr_url
+
+
+# ── Developer Mode — API endpoints ─────────────────────────────────────────────
+
+@app.post("/api/v1/repositories/{repo_id}/analyze-improvements", tags=["developer"])
+async def trigger_improvement_analysis(
+    repo_id: str,
+    _user: dict = Depends(_get_current_user),
+) -> dict[str, str]:
+    """
+    Trigger full-repository code improvement analysis as a background task.
+    Returns immediately with status 'analyzing'. Results arrive via WebSocket.
+    """
+    # Resolve owner/repo_name/branch/token from PostgreSQL or in-memory registry
+    owner, repo_name, branch, token = "", "", "main", ""
+
+    token = getattr(settings, "github_token", "") or ""
+
+    # Try DB first
+    if _sf is not None:
+        try:
+            async with _sf() as session:
+                res = await session.execute(
+                    text(
+                        "SELECT owner, name, repo_url FROM repositories "
+                        "WHERE id::text = :rid"
+                    ),
+                    {"rid": repo_id},
+                )
+                row = res.mappings().first()
+            if row:
+                owner = row["owner"] or ""
+                repo_name = row["name"] or ""
+                # If owner/name are missing, try to extract from repo_url
+                if (not owner or not repo_name) and row.get("repo_url"):
+                    url_parts = (row["repo_url"] or "").rstrip("/").split("/")
+                    if len(url_parts) >= 2:
+                        owner = owner or url_parts[-2]
+                        repo_name = repo_name or url_parts[-1]
+                        if repo_name.endswith(".git"):
+                            repo_name = repo_name[:-4]
+            # Update status to 'analyzing'
+            async with _sf() as session:
+                await session.execute(
+                    text("UPDATE repositories SET status = 'analyzing' WHERE id::text = :rid"),
+                    {"rid": repo_id},
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("analyze_improvements_db_error", error=str(exc))
+
+    # Fallback to in-memory registry
+    if not owner:
+        reg = _repo_registry.get(repo_id, {})
+        owner = reg.get("owner", "")
+        repo_name = reg.get("name", "")
+        if "/" in repo_id and not owner:
+            parts = repo_id.split("/", 1)
+            owner, repo_name = parts[0], parts[1]
+
+    if not owner or not repo_name:
+        # Don't block — return accepted so UI doesn't show error
+        # The analysis will fail gracefully with empty file list
+        logger.warning("analyze_improvements_unknown_repo", repo_id=repo_id)
+        owner = repo_id
+        repo_name = "unknown"
+
+    asyncio.create_task(
+        _analyze_full_repository_for_improvements(
+            repo_id, owner, repo_name, branch, token, _mongo_db, _ws_connections
+        )
+    )
+
+    return {
+        "status": "analyzing",
+        "message": "Analysis started. Results will appear shortly.",
+    }
+
+
+@app.get("/api/v1/repositories/{repo_id}/suggestions", tags=["developer"])
+async def get_repo_suggestions(
+    repo_id: str,
+    category: Optional[str] = Query(default=None),
+    priority: Optional[str] = Query(default=None),
+    file_path: Optional[str] = Query(default=None),
+    status: str = Query(default="open"),
+    page: int = Query(default=1),
+    per_page: int = Query(default=20),
+    _user: dict = Depends(_get_current_user),
+) -> dict[str, Any]:
+    """Return paginated code improvement suggestions for a repository."""
+    if _mongo_db is None:
+        return {"suggestions": [], "total": 0, "page": page, "per_page": per_page}
+
+    query: dict[str, Any] = {"repo_id": repo_id, "status": status}
+    if category:
+        query["category"] = category
+    if priority:
+        query["priority"] = priority
+    if file_path:
+        query["file_path"] = file_path
+
+    priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    skip = (page - 1) * per_page
+
+    suggestions = []
+    async for doc in (
+        _mongo_db["code_suggestions"]
+        .find(query)
+        .skip(skip)
+        .limit(per_page)
+    ):
+        doc["id"] = str(doc.pop("_id"))
+        doc.pop("_id", None)
+        suggestions.append(doc)
+
+    # Sort by priority
+    suggestions.sort(key=lambda s: priority_order.get(s.get("priority", "low"), 3))
+
+    total = await _mongo_db["code_suggestions"].count_documents(query)
+    return {
+        "suggestions": suggestions,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+    }
+
+
+@app.get("/api/v1/repositories/{repo_id}/suggestions/summary", tags=["developer"])
+async def get_suggestions_summary(
+    repo_id: str,
+    _user: dict = Depends(_get_current_user),
+) -> dict[str, Any]:
+    """Return aggregate counts for suggestions by priority and category."""
+    if _mongo_db is None:
+        return {
+            "total": 0,
+            "by_priority": {},
+            "by_category": {},
+            "files_with_suggestions": [],
+        }
+
+    base_q = {"repo_id": repo_id, "status": "open"}
+    total = await _mongo_db["code_suggestions"].count_documents(base_q)
+
+    by_priority: dict[str, int] = {}
+    by_category: dict[str, int] = {}
+    files: dict[str, int] = {}
+
+    async for doc in _mongo_db["code_suggestions"].find(base_q, {
+        "priority": 1, "category": 1, "file_path": 1
+    }):
+        p = doc.get("priority", "low")
+        c = doc.get("category", "best_practice")
+        fp = doc.get("file_path", "unknown")
+        by_priority[p] = by_priority.get(p, 0) + 1
+        by_category[c] = by_category.get(c, 0) + 1
+        files[fp] = files.get(fp, 0) + 1
+
+    files_sorted = sorted(
+        [{"file_path": k, "count": v} for k, v in files.items()],
+        key=lambda x: -x["count"],
+    )
+
+    return {
+        "total": total,
+        "by_priority": by_priority,
+        "by_category": by_category,
+        "files_with_suggestions": files_sorted,
+    }
+
+
+@app.post(
+    "/api/v1/repositories/{repo_id}/suggestions/{suggestion_id}/feedback",
+    tags=["developer"],
+)
+async def suggestion_feedback(
+    repo_id: str,
+    suggestion_id: str,
+    body: dict,
+    _user: dict = Depends(_get_current_user),
+) -> dict[str, Any]:
+    """Upvote or downvote a suggestion. One vote per user per suggestion."""
+    feedback_type = body.get("feedback")
+    if feedback_type not in ("upvote", "downvote"):
+        raise HTTPException(400, "feedback must be 'upvote' or 'downvote'")
+    if _mongo_db is None:
+        raise HTTPException(503, "MongoDB not connected")
+
+    from bson import ObjectId
+    try:
+        oid = ObjectId(suggestion_id)
+    except Exception:
+        raise HTTPException(400, "Invalid suggestion_id")
+
+    # Enforce one-vote-per-user (reuse error_feedback collection)
+    try:
+        await _mongo_db["error_feedback"].insert_one({
+            "error_id": oid,
+            "repo_id": repo_id,
+            "user_id": _user["user_id"],
+            "feedback": feedback_type,
+            "created_at": datetime.now(UTC),
+            "collection": "code_suggestions",
+        })
+    except Exception:
+        raise HTTPException(409, "You have already voted on this suggestion")
+
+    inc_field = "upvotes" if feedback_type == "upvote" else "downvotes"
+    doc = await _mongo_db["code_suggestions"].find_one_and_update(
+        {"_id": oid, "repo_id": repo_id},
+        {"$inc": {inc_field: 1}},
+        return_document=True,
+    )
+    if not doc:
+        raise HTTPException(404, "Suggestion not found")
+
+    # Update RL weights for the category
+    await _update_rl_weights(_mongo_db, doc.get("category", "best_practice"))
+
+    return {
+        "suggestion_id": suggestion_id,
+        "feedback": feedback_type,
+        "upvotes": doc.get("upvotes", 0),
+        "downvotes": doc.get("downvotes", 0),
+    }
+
+
+@app.post(
+    "/api/v1/repositories/{repo_id}/suggestions/{suggestion_id}/apply-fix",
+    tags=["developer"],
+)
+async def apply_suggestion_fix(
+    repo_id: str,
+    suggestion_id: str,
+    _user: dict = Depends(_get_current_user),
+) -> dict[str, str]:
+    """Create a GitHub Pull Request applying the suggested fix."""
+    if _mongo_db is None:
+        raise HTTPException(503, "MongoDB not connected")
+
+    token = getattr(settings, "github_token", "") or ""
+    if not token:
+        raise HTTPException(400, "GITHUB_TOKEN not configured. Set it in .env to create PRs.")
+
+    owner, repo_name, branch = "", "", "main"
+
+    if _sf is not None:
+        try:
+            async with _sf() as session:
+                res = await session.execute(
+                    text("SELECT owner, name FROM repositories WHERE id::text = :rid"),
+                    {"rid": repo_id},
+                )
+                row = res.mappings().first()
+            if row:
+                owner = row["owner"] or ""
+                repo_name = row["name"] or ""
+        except Exception:
+            pass
+
+    if not owner:
+        reg = _repo_registry.get(repo_id, {})
+        owner = reg.get("owner", "")
+        repo_name = reg.get("name", "")
+        if "/" in repo_id and not owner:
+            parts = repo_id.split("/", 1)
+            owner, repo_name = parts[0], parts[1]
+
+    if not owner or not repo_name:
+        raise HTTPException(400, "Could not determine repository owner/name")
+
+    try:
+        pr_url = await _generate_fix_and_create_pr(
+            repo_id, suggestion_id, token, owner, repo_name, branch, _mongo_db
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"PR creation failed: {exc}")
+
+    return {"pr_url": pr_url, "status": "pr_created"}
+
+
+@app.post(
+    "/api/v1/repositories/{repo_id}/suggestions/{suggestion_id}/dismiss",
+    tags=["developer"],
+)
+async def dismiss_suggestion(
+    repo_id: str,
+    suggestion_id: str,
+    _user: dict = Depends(_get_current_user),
+) -> dict[str, str]:
+    """Mark a suggestion as dismissed."""
+    if _mongo_db is None:
+        raise HTTPException(503, "MongoDB not connected")
+    from bson import ObjectId
+    try:
+        oid = ObjectId(suggestion_id)
+    except Exception:
+        raise HTTPException(400, "Invalid suggestion_id")
+    result = await _mongo_db["code_suggestions"].update_one(
+        {"_id": oid, "repo_id": repo_id},
+        {"$set": {"status": "dismissed"}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(404, "Suggestion not found")
+    return {"suggestion_id": suggestion_id, "status": "dismissed"}
 
 
 # ── Background tasks ───────────────────────────────────────────────────────────
@@ -1772,11 +2590,13 @@ async def ws_incidents(ws: WebSocket) -> None:
                         for _, fields in events:
                             payload = json.loads(fields.get("payload", "{}"))
                             await ws.send_json(payload)
+                except asyncio.CancelledError:
+                    break
                 except Exception:
                     await asyncio.sleep(2)
             else:
                 await asyncio.sleep(5)
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     finally:
         conns = _ws_connections.get("incidents", [])
@@ -1794,10 +2614,12 @@ async def ws_metrics(ws: WebSocket) -> None:
             try:
                 sample = get_latest_metrics()
                 await ws.send_json({"type": "metrics_update", "data": sample})
+            except (WebSocketDisconnect, asyncio.CancelledError):
+                raise
             except Exception:
                 pass
             await asyncio.sleep(10)
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, asyncio.CancelledError):
         pass
 
 

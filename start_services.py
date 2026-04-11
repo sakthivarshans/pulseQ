@@ -27,13 +27,36 @@ MAX_RESTARTS = 3
 def start_service(name, module, port):
     """Launch a single uvicorn service and return the Popen object."""
     return subprocess.Popen(
-        ["uv", "run", "uvicorn", module, "--port", str(port), "--host", "0.0.0.0"],
+        [sys.executable, "-m", "uvicorn", module, "--port", str(port), "--host", "0.0.0.0"],
     )
 
 
 def main():
     processes = {}   # name -> (proc, module, port, restart_count)
     print("\033[1;34m🚀 Starting NeuralOps Backend Services...\033[0m\n")
+    
+    # Pre-flight check: .env file
+    if not os.path.exists(".env"):
+        print(f"\033[1;31m[!] WARNING: .env file not found in the root directory.\033[0m")
+        print(f"    Please copy .env.example to .env and configure it for local use.\n")
+    else:
+        # Quick verify services
+        import socket
+        infra_checks = [("Postgres", 5432), ("Redis", 6379), ("MongoDB", 27017)]
+        missing = []
+        for name, port in infra_checks:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.5)
+            try:
+                s.connect(("localhost", port))
+            except:
+                missing.append(name)
+            finally:
+                s.close()
+        
+        if missing:
+            print(f"\033[1;33m[!] WARNING: The following infra services appear to be OFFLINE: {', '.join(missing)}\033[0m")
+            print(f"    The services may crash or fail to connect. Run \033[1;36mpython verify_infra.py\033[0m for details.\n")
 
     for name, module, port in SERVICES:
         print(f"\033[1;32m[+]\033[0m Starting {name:20} on port {port}...")

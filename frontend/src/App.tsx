@@ -77,7 +77,7 @@ function Sidebar({ activePath, collapsed, onToggle }: { activePath: string; coll
                 </div>
                 {!collapsed && (
                     <div>
-                        <div style={{ fontWeight: 800, fontSize: 14, color: '#0F172A', letterSpacing: '-0.01em' }}>NeuralOps</div>
+                        <div style={{ fontWeight: 800, fontSize: 14, color: '#0F172A', letterSpacing: '-0.01em' }}>PulseQ</div>
                         <div style={{ fontSize: 9.5, color: '#94A3B8', letterSpacing: '0.09em', fontWeight: 600 }}>AI SRE PLATFORM</div>
                     </div>
                 )}

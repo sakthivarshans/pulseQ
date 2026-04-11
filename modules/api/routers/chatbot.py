@@ -28,7 +28,7 @@ logger = structlog.get_logger(__name__)
 router = APIRouter()
 
 # ── System prompt ──────────────────────────────────────────────────────────────
-CHATBOT_SYSTEM_PROMPT = """You are NeuralOps AI, an expert DevOps engineer and SRE with 15 years of experience. You are embedded inside the NeuralOps platform and have access to real infrastructure data provided in your context below.
+CHATBOT_SYSTEM_PROMPT = """You are PulseQ AI, an expert DevOps engineer and SRE with 15 years of experience. You are embedded inside the PulseQ platform and have access to real infrastructure data provided in your context below.
 
 STRICT RULES YOU MUST FOLLOW:
 1. ALWAYS reference specific data from the context. Quote actual metric values, actual file names, actual line numbers, actual error messages. Never give a generic answer when specific data exists in the context.

@@ -56,7 +56,7 @@ class PagerDutyIntegration(ToolIntegrationInterface):
             "links": [
                 {
                     "href": f"{settings.api_base_url}/incidents/{incident.incident_id}",
-                    "text": "View in NeuralOps Dashboard",
+                    "text": "View in PulseQ Dashboard",
                 }
             ],
         }

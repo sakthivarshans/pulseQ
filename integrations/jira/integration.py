@@ -44,8 +44,8 @@ class JiraIntegration(ToolIntegrationInterface):
             f"*Affected Services*: {', '.join(incident.affected_services)}\n"
             f"*Environment*: {incident.environment}\n"
             f"*Detected At*: {incident.detected_at.isoformat()}\n"
-            f"*NeuralOps Link*: {rca_link}\n\n"
-            f"_This ticket was automatically created by NeuralOps AI._"
+            f"*PulseQ Link*: {rca_link}\n\n"
+            f"_This ticket was automatically created by PulseQ AI._"
         )
         payload = {
             "fields": {

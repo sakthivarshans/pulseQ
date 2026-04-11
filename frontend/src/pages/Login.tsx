@@ -54,7 +54,7 @@ export default function Login() {
                     }}>
                         <Zap size={30} color="#fff" strokeWidth={2.5} />
                     </div>
-                    <h1 style={{ fontSize: 30, fontWeight: 800, color: '#0F172A', letterSpacing: '-0.03em' }}>NeuralOps</h1>
+                    <h1 style={{ fontSize: 30, fontWeight: 800, color: '#0F172A', letterSpacing: '-0.03em' }}>PulseQ</h1>
                     <p style={{ fontSize: 14, color: '#64748B', marginTop: 8 }}>AI DevOps Intelligence Platform</p>
                 </div>
 
@@ -159,7 +159,7 @@ export default function Login() {
                 </div>
 
                 <div style={{ textAlign: 'center', fontSize: 12, color: '#94A3B8' }}>
-                    Powered by Gemini 1.5 Flash · NeuralOps AI SRE Platform
+                    Powered by Gemini 1.5 Flash · PulseQ AI SRE Platform
                 </div>
             </div>
         </div>

@@ -22,7 +22,7 @@ from shared.schemas import ChatRole
 logger = structlog.get_logger(__name__)
 settings = get_settings()
 
-_SYSTEM_PROMPT = """You are NeuralOps AI — an expert autonomous DevOps and SRE assistant \
+_SYSTEM_PROMPT = """You are PulseQ AI — an expert autonomous DevOps and SRE assistant \
 integrated with a production monitoring platform. You have access to:
 - Active incidents and their RCA results
 - Current anomaly scores and affected services

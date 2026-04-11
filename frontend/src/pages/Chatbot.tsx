@@ -161,7 +161,7 @@ export default function Chatbot({ embedded = false, onClose }: ChatbotProps) {
                     <Sparkles size={18} color="#fff" />
                 </div>
                 <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: 15, color: '#fff' }}>NeuralOps AI</div>
+                    <div style={{ fontWeight: 700, fontSize: 15, color: '#fff' }}>PulseQ AI</div>
                     <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)' }}>SRE Intelligence Assistant</div>
                 </div>
                 <button onClick={clearChat} title="Clear chat" style={{
@@ -199,7 +199,7 @@ export default function Chatbot({ embedded = false, onClose }: ChatbotProps) {
                             <Zap size={28} color="#fff" />
                         </div>
                         <div>
-                            <div style={{ fontSize: 16, fontWeight: 700, color: '#0F172A', marginBottom: 6 }}>Ask NeuralOps AI</div>
+                            <div style={{ fontSize: 16, fontWeight: 700, color: '#0F172A', marginBottom: 6 }}>Ask PulseQ AI</div>
                             <div style={{ fontSize: 13, color: '#64748B', maxWidth: 280, lineHeight: 1.6 }}>
                                 I have access to your live incidents, metrics, and code errors.
                             </div>
